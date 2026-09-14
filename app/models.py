@@ -139,6 +139,38 @@ class EmergencyContact(Base):
     active: Mapped[bool] = mapped_column(Boolean, default=True)
 
 
+class ResponseUnit(Base):
+    """An emergency service unit the dispatcher can send to an incident.
+
+    This is operator-maintained roster data (like emergency contacts), not
+    sensor data — it is entered by a human, never fabricated by the system.
+    """
+    __tablename__ = "response_units"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    call_sign: Mapped[str] = mapped_column(String(32), unique=True, index=True)
+    unit_type: Mapped[str] = mapped_column(String(16), index=True)  # AMBULANCE|FIRE|POLICE|RESCUE
+    station_name: Mapped[str] = mapped_column(String(128))
+    home_lat: Mapped[float] = mapped_column(Float)
+    home_lon: Mapped[float] = mapped_column(Float)
+    # Live position when the unit reports one; falls back to the station.
+    current_lat: Mapped[float | None] = mapped_column(Float)
+    current_lon: Mapped[float | None] = mapped_column(Float)
+    status: Mapped[str] = mapped_column(String(16), default="available", index=True)
+    crew_size: Mapped[int | None] = mapped_column(Integer)
+    contact_phone: Mapped[str | None] = mapped_column(String(32))
+    assigned_incident_id: Mapped[str | None] = mapped_column(
+        ForeignKey("incidents.id"), index=True)
+    active: Mapped[bool] = mapped_column(Boolean, default=True)
+    last_update: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    def position(self) -> tuple[float, float]:
+        """Live position if reported, else the home station."""
+        if self.current_lat is not None and self.current_lon is not None:
+            return self.current_lat, self.current_lon
+        return self.home_lat, self.home_lon
+
+
 class DispatchEvent(Base):
     __tablename__ = "dispatch_events"
 

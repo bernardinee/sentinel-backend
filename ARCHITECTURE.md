@@ -20,8 +20,10 @@ flowchart LR
     INC["incidents"]
     DEV["devices"]
     DIS["dispatch"]
+    UNI["units<br/>roster · recommend · assign"]
+    RTE["routing<br/>road time + fallback"]
     WS["ws hub"]
-    DB[("PostgreSQL<br/>incidents · windows<br/>heartbeats · dispatch_events")]
+    DB[("PostgreSQL<br/>incidents · windows · units<br/>heartbeats · dispatch_events")]
     ING --> DB
     ING --> INF
     INF --> ING
@@ -30,9 +32,13 @@ flowchart LR
     DIS --> WS
     INC --> DB
     DEV --> DB
+    UNI --> DB
+    UNI --> RTE
+    UNI --> WS
   end
 
   ML["ML API (Railway)<br/>phase2_xgboost_calibrated<br/>signature+impulse v2"]
+  OSRM["OSRM (keyless)<br/>road routes"]
   DASH["sentinel-dashboard<br/>React + MapLibre"]
   APP["Sentinel app (later)<br/>driver · responder"]
   PHONE["Emergency contacts"]
@@ -42,9 +48,12 @@ flowchart LR
   TRIG -.->|"SMS — independent path"| GSM --> PHONE
   ING -->|flat ACK| LED
   INF <-->|"POST /predict"| ML
-  WS -->|"incident.created / updated"| DASH
+  RTE <-->|"road route"| OSRM
+  WS -->|"incident / unit updates"| DASH
   INC --> DASH
   DIS --> DASH
+  UNI -->|"ranked ETAs + route geometry"| DASH
+  UNI -->|"dispatch order"| CREW["Ambulance · Fire<br/>Police · Rescue"]
   INC --> APP
   DEV --> APP
 
@@ -52,8 +61,8 @@ flowchart LR
   classDef svc fill:#0f172a,stroke:#38bdf8,color:#e2e8f0
   classDef ext fill:#422006,stroke:#f59e0b,color:#fef3c7
   class IMU,RING,TRIG,GPS,GSM,LED edge
-  class ING,INF,INC,DEV,DIS,WS,DB svc
-  class ML,DASH,APP,PHONE ext
+  class ING,INF,INC,DEV,DIS,UNI,RTE,WS,DB svc
+  class ML,OSRM,DASH,APP,PHONE,CREW ext
 ```
 
 The critical topology change from the previous system: **the ESP32 no longer
@@ -72,6 +81,8 @@ the moment the buffer scrolled.
 | `devices` | Device registry, liveness from heartbeat age, heartbeat history | Ingest |
 | `dispatch` | The acknowledge → dispatch → resolve state machine, writing `dispatch_events` | Touch classification fields |
 | `stats` | Aggregations, excluding `manual_panic` | Recompute classifications |
+| `units` | Fleet roster, road-time dispatch recommendations, assignment, unit status | Decide severity |
+| `routing` | OSRM road routes with caching and a marked straight-line fallback | Persist anything |
 | `sentinel` | Driver/responder hooks: protection status, panic, contacts | Duplicate responder logic |
 | `ws` | Connection registry, 20 s keepalive, fan-out | Persist anything |
 
@@ -129,6 +140,37 @@ this tier that would be the wrong trade:
 
 Scaling was never the constraint. One node reports at most a handful of events a
 day, and the ML call dominates the request time.
+
+## 3b. Dispatch: fastest, not nearest
+
+Detecting a crash is only half the chain — someone has to reach it. The `units`
+module answers "who gets there soonest" rather than "who is closest", because in
+Accra those are different questions: the ring roads, one-way systems and the
+Korle lagoon mean a unit 2 km away across the lagoon can be slower than one 6 km
+away with a clear road.
+
+```
+available units
+      │ haversine shortlist (3 nearest per service type)   ← cheap, local
+      ▼
+   OSRM road routes for the shortlist only                 ← accurate, remote
+      │
+      ▼
+ rank by travel time · flag the fastest of each required type
+```
+
+Two stages because accuracy is wanted but a public routing demo should not be
+hammered: the coarse filter is free and local, and only a handful of candidates
+are routed properly.
+
+Required services are advisory, derived from severity (Severe → ambulance, fire,
+police; Moderate → ambulance, police). The dispatcher can always override — the
+system recommends, it does not decide.
+
+When OSRM is unreachable the ETA falls back to haversine × 1.35 at 32 km/h and is
+**explicitly marked** `straight_line`, dashed on the map and labelled "est." in
+the list. An estimate presented as a road route would be worse than no estimate,
+because a dispatcher would plan around it.
 
 ## 4. The SMS fail-safe is independent by design
 

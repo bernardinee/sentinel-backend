@@ -76,16 +76,34 @@ API's own Postman suite — real recorded windows, including the negative case
 `signature_override`. They are development fixtures; the demonstration path uses
 the live device.
 
+## Dispatching units
+
+Register the fleet once (operator configuration — real Greater Accra stations):
+
+```bash
+python scripts/register_fleet.py
+```
+
+Then `GET /api/v1/incidents/{id}/dispatch-options` ranks available units by
+**road travel time** to the scene, flags the fastest of each required service,
+and returns route geometry for the map. `POST …/assign-unit` sends one.
+
+Routing uses the keyless public OSRM demo. If it is unreachable, ETAs fall back
+to a haversine estimate that is explicitly marked `straight_line` — the UI dashes
+those routes so a guess never reads as a road route.
+
 ## Tests
 
 ```bash
-python -m pytest -q     # 19 tests
+python -m pytest -q     # 26 tests
 ```
 
 Covering ingest validation (sample count, `fs_hz`, units, and the m/s² unit
 assertion), `event_id` idempotency, ML client retry and unavailability, the
-dispatch state machine, and panic exclusion from statistics. Two run the real
-model against real windows and assert the crash/override outcomes.
+dispatch state machine, panic exclusion from statistics, and the unit roster —
+including that ranking follows road time rather than straight-line distance, and
+that routing degrades safely when OSRM is down. Two run the real model against
+real windows and assert the crash/override outcomes.
 
 Tests use SQLite and need no Docker.
 
@@ -98,10 +116,13 @@ app/
   modules/
     ingest.py             validate → idempotency → persist → classify → broadcast
     incidents.py devices.py dispatch.py stats.py sentinel.py ws.py
+    units.py              fleet roster, ETA ranking, assignment
+    routing.py            OSRM road routes, cache, marked fallback
     inference/
       service.py          remote/local dispatcher, retries
       phase2_vendored.py  verbatim port of the ML API inference path
 alembic/                  migrations
 artifacts/                model, feature names, calibrated thresholds
 scripts/replay.py         re-inject a stored capture through the full path
+scripts/register_fleet.py load the Accra responder roster
 ```

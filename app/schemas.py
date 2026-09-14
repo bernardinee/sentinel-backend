@@ -261,6 +261,87 @@ class ContactPatch(BaseModel):
     active: bool | None = None
 
 
+# ── Response units / dispatch routing ────────────────────────────────────────
+
+UnitType = Literal["AMBULANCE", "FIRE", "POLICE", "RESCUE"]
+UnitStatus = Literal["available", "dispatched", "en_route", "on_scene", "out_of_service"]
+
+
+class UnitIn(BaseModel):
+    call_sign: str
+    unit_type: UnitType
+    station_name: str
+    home_lat: float
+    home_lon: float
+    crew_size: int | None = None
+    contact_phone: str | None = None
+
+
+class UnitPatch(BaseModel):
+    station_name: str | None = None
+    status: UnitStatus | None = None
+    current_lat: float | None = None
+    current_lon: float | None = None
+    crew_size: int | None = None
+    contact_phone: str | None = None
+    active: bool | None = None
+
+
+class UnitOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: str
+    call_sign: str
+    unit_type: str
+    station_name: str
+    home_lat: float
+    home_lon: float
+    current_lat: float | None
+    current_lon: float | None
+    status: str
+    crew_size: int | None
+    contact_phone: str | None
+    assigned_incident_id: str | None
+    active: bool
+    last_update: datetime
+
+
+class RouteOut(BaseModel):
+    distance_km: float
+    duration_min: float
+    geometry: list[list[float]] = []
+    source: str  # "osrm" (road route) | "straight_line" (estimate)
+
+
+class DispatchOption(BaseModel):
+    """A unit ranked by how fast it can actually reach the scene by road."""
+    unit: UnitOut
+    route: RouteOut
+    eta_min: float
+    recommended: bool  # top pick for its service type
+
+
+class DispatchOptions(BaseModel):
+    incident_id: str
+    incident_lat: float
+    incident_lon: float
+    required_types: list[str]
+    options: list[DispatchOption]
+    routing_source: str
+    note: str | None = None
+
+
+class AssignUnitIn(BaseModel):
+    call_sign: str
+    actor: str
+    note: str | None = None
+
+
+class UnitStatusIn(BaseModel):
+    status: UnitStatus
+    actor: str
+    note: str | None = None
+
+
 class ContactOut(BaseModel):
     model_config = ConfigDict(from_attributes=True, populate_by_name=True)
     id: str

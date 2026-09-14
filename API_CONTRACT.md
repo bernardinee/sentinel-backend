@@ -19,12 +19,12 @@ Responses are Pydantic-validated. Errors use FastAPI's shape:
 | Code | Meaning |
 |---|---|
 | 200 | OK (also returned for an idempotent replay of an existing `event_id`) |
-| 201 | Created (`/panic`, contact creation) |
+| 201 | Created (`/panic`, contact creation, unit registration) |
 | 204 | Deleted, no body |
 | 401 | Missing or invalid `X-API-Key` |
 | 403 | Valid key, insufficient role |
-| 404 | Unknown incident / device / contact |
-| 409 | Illegal dispatch-state transition |
+| 404 | Unknown incident / device / contact / unit |
+| 409 | Illegal dispatch-state transition, duplicate call sign, unit already committed, or routing requested for an incident with no GPS fix |
 | 422 | Payload failed validation (sample count, `fs_hz`, units, unit-scale assertion) |
 | 502 | — *not used*: ML failures never fail ingest, see §Graceful degradation |
 
@@ -228,6 +228,92 @@ closed incident is always 409.
 
 ---
 
+## 3b. Response units and dispatch routing
+
+The dispatcher's real question is not "which unit is nearest" but "which unit
+gets there soonest". Those differ often enough in Accra — ring roads, one-ways,
+the Korle lagoon — that recommendations are ranked by **road travel time**, never
+by straight-line distance.
+
+Routing uses the public OSRM demo server: free and keyless, the same constraint
+that drives the OSM basemap. Candidates are coarse-filtered by haversine (three
+nearest per service type) and only the shortlist is routed, so a large roster
+does not fan out into dozens of calls.
+
+### Roster
+
+| Endpoint | Body / notes |
+|---|---|
+| `GET /api/v1/units` | `UnitOut[]` |
+| `POST /api/v1/units` | `{call_sign, unit_type, station_name, home_lat, home_lon, crew_size?, contact_phone?}` → 201. 409 if the call sign exists. |
+| `PATCH /api/v1/units/{call_sign}` | Any of `station_name, status, current_lat, current_lon, crew_size, contact_phone, active` |
+| `DELETE /api/v1/units/{call_sign}` | 204. **409** while the unit is dispatched/en route/on scene. |
+
+`unit_type` ∈ `AMBULANCE | FIRE | POLICE | RESCUE`.
+`status` ∈ `available | dispatched | en_route | on_scene | out_of_service`.
+
+A unit reports `current_lat`/`current_lon` when it has live positions;
+recommendations use those and fall back to the home station.
+
+The roster is **operator configuration**, like emergency contacts — entered by a
+human, never fabricated. `scripts/register_fleet.py` loads a starting roster of
+real Greater Accra facilities (Korle Bu, 37 Military, Ridge, GNFS and Police
+stations, NADMO) at their real coordinates.
+
+### `GET /api/v1/incidents/{id}/dispatch-options`
+
+```json
+{
+  "incident_id": "…", "incident_lat": 5.6581, "incident_lon": -0.1812,
+  "required_types": ["AMBULANCE", "POLICE"],
+  "routing_source": "osrm",
+  "note": null,
+  "options": [
+    {
+      "unit": { …UnitOut… },
+      "route": { "distance_km": 1.9, "duration_min": 5.0,
+                 "geometry": [[lon,lat], …], "source": "osrm" },
+      "eta_min": 5.0,
+      "recommended": true
+    }
+  ]
+}
+```
+
+Sorted by `eta_min` ascending. `recommended` marks the fastest available unit of
+each required type. `required_types` is advisory, derived from severity —
+Severe → ambulance + fire + police, Moderate → ambulance + police, Normal → none
+— and the dispatcher may send anything regardless.
+
+`route.geometry` is GeoJSON `[lon, lat]` for drawing the path on the map.
+
+**409** if the incident has no GPS fix: units cannot be routed to an unknown
+location, and saying so is better than routing to a default.
+
+When OSRM is unreachable, `source` is `straight_line` (haversine × 1.35 urban
+detour factor at 32 km/h) and `routing_source` becomes `straight_line` or
+`mixed`, with `note` explaining that those ETAs are estimates. The UI dashes
+estimated routes so a guess never looks like a road route.
+
+### `POST /api/v1/incidents/{id}/assign-unit`
+
+`{call_sign, actor, note?}` → `IncidentOut`.
+
+Sets the unit to `dispatched`, links it to the incident, moves the incident to
+`dispatched` (acknowledging it first if it was still `new`), writes an `assign`
+dispatch event with the measured road ETA in the note, and broadcasts both
+`incident.updated` and `unit.updated`.
+
+**409** if the incident is closed, if the unit is already committed to a
+different incident, or if it is inactive.
+
+### `POST /api/v1/units/{call_sign}/status`
+
+`{status, actor, note?}` → `UnitOut`. Progresses a unit through the response.
+`en_route` and `on_scene` also write onto the assigned incident's timeline, so
+the dispatcher reads one story rather than two. `available` and
+`out_of_service` release the incident link.
+
 ## 4. Sentinel app hooks
 
 Endpoints are live now; the mobile app consumes them later with no backend
@@ -286,6 +372,7 @@ WebSocket handshake. An invalid key closes with code **4401**.
 
 - `incident.created` / `incident.updated` → `data` is a full `IncidentOut`.
 - `device_status` → `{device_id, status, last_seen_at, lat, lon, satellites, uptime_s, free_heap, rssi, battery_v}`.
+- `unit.updated` → `data` is a full `UnitOut`, emitted on assignment and on every status change.
 - `ping` → server keepalive every 20 s; the client replies `{"type":"pong"}`.
 
 **Client obligations**

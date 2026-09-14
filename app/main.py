@@ -14,7 +14,8 @@ from app.auth import require_role
 from app.config import get_settings
 from app.db import SessionLocal
 from app.models import DeviceHeartbeat, Incident, IncidentWindow, utcnow
-from app.modules import devices, dispatch, incidents, ingest, sentinel, stats
+from app.modules import (devices, dispatch, incidents, ingest, sentinel, stats,
+                         units)
 from app.modules.inference.service import (InferenceUnavailable, classify,
                                            ml_health)
 from app.modules.ingest import _apply_classification
@@ -102,6 +103,7 @@ app.include_router(dispatch.router, prefix=api)
 app.include_router(devices.router, prefix=api)
 app.include_router(stats.router, prefix=api)
 app.include_router(sentinel.router, prefix=api)
+app.include_router(units.router, prefix=api)
 
 
 @app.get("/health")
