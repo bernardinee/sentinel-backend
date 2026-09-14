@@ -1,0 +1,37 @@
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: sentinel
+      POSTGRES_PASSWORD: sentinel
+      POSTGRES_DB: sentinel
+    ports:
+      - "5433:5432"
+    volumes:
+      - sentinel_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U sentinel"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  backend:
+    build: .
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql+psycopg2://sentinel:sentinel@db:5432/sentinel
+      ML_API_URL: ${ML_API_URL:-https://accident-severity-api-production.up.railway.app}
+      ML_TIMEOUT_S: ${ML_TIMEOUT_S:-10}
+      INFERENCE_MODE: ${INFERENCE_MODE:-local}
+      API_KEY: ${API_KEY:-change-me-sentinel-dev-key}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:5173}
+    ports:
+      - "8080:8080"
+    command: >
+      sh -c "alembic upgrade head &&
+             uvicorn app.main:app --host 0.0.0.0 --port 8080"
+
+volumes:
+  sentinel_pgdata:
