@@ -125,22 +125,20 @@ async def dispatch_options(incident_id: str, db: Session = Depends(get_db),
             detail="Incident has no GPS fix, so units cannot be routed to it")
 
     required = REQUIRED_BY_SEVERITY.get(incident.severity_class or 0, [])
-    units = db.execute(
+    available = db.execute(
         select(ResponseUnit).where(
             ResponseUnit.active.is_(True),
             ResponseUnit.status == "available")
     ).scalars().all()
+    # Units already on this call still need routing — the dispatcher wants to
+    # watch the responder's path, not just the candidates'.
+    committed = db.execute(
+        select(ResponseUnit).where(ResponseUnit.assigned_incident_id == incident.id)
+    ).scalars().all()
 
-    if not units:
-        return DispatchOptions(
-            incident_id=incident.id, incident_lat=incident.lat,
-            incident_lon=incident.lon, required_types=required, options=[],
-            routing_source="none",
-            note="No available units on the roster. Register units under Fleet.")
-
-    # stage 1 — shortlist the nearest few of each type
+    # stage 1 — shortlist the nearest few of each type (cheap, local)
     by_type: dict[str, list[ResponseUnit]] = {}
-    for u in units:
+    for u in available:
         by_type.setdefault(u.unit_type, []).append(u)
     shortlist: list[ResponseUnit] = []
     for type_units in by_type.values():
@@ -148,30 +146,35 @@ async def dispatch_options(incident_id: str, db: Session = Depends(get_db),
                                                    incident.lat, incident.lon))
         shortlist.extend(type_units[:ROUTE_CANDIDATES_PER_TYPE])
 
-    # stage 2 — real road routes for the shortlist only
+    if not shortlist and not committed:
+        return DispatchOptions(
+            incident_id=incident.id, incident_lat=incident.lat,
+            incident_lon=incident.lon, required_types=required, options=[],
+            responding=[], routing_source="none",
+            note="No available units on the roster. Register units under Fleet.")
+
+    # stage 2 — real road routes, for the shortlist and the responders only
+    to_route = shortlist + committed
     routes = await route_many(
-        [(u.call_sign, *u.position()) for u in shortlist],
+        [(u.call_sign, *u.position()) for u in to_route],
         incident.lat, incident.lon, with_geometry=True)
 
-    options: list[DispatchOption] = []
-    for u in shortlist:
+    def to_option(u: ResponseUnit) -> DispatchOption:
         r = routes[u.call_sign]
-        options.append(DispatchOption(
-            unit=UnitOut.model_validate(u),
-            route=RouteOut(**r),
-            eta_min=r["duration_min"],
-            recommended=False,
-        ))
-    options.sort(key=lambda o: o.eta_min)
+        return DispatchOption(unit=UnitOut.model_validate(u), route=RouteOut(**r),
+                              eta_min=r["duration_min"], recommended=False)
 
-    # mark the fastest unit of each required type as the recommended pick
+    options = sorted((to_option(u) for u in shortlist), key=lambda o: o.eta_min)
+    responding = sorted((to_option(u) for u in committed), key=lambda o: o.eta_min)
+
+    # mark the fastest available unit of each required type as the pick
     for service in required:
         for o in options:
             if o.unit.unit_type == service:
                 o.recommended = True
                 break
 
-    sources = {o.route.source for o in options}
+    sources = {o.route.source for o in options + responding}
     routing_source = "osrm" if sources == {"osrm"} else (
         "mixed" if "osrm" in sources else "straight_line")
 
@@ -186,7 +189,8 @@ async def dispatch_options(incident_id: str, db: Session = Depends(get_db),
     return DispatchOptions(
         incident_id=incident.id, incident_lat=incident.lat,
         incident_lon=incident.lon, required_types=required,
-        options=options, routing_source=routing_source, note=note)
+        options=options, responding=responding,
+        routing_source=routing_source, note=note)
 
 
 # ── Assignment ───────────────────────────────────────────────────────────────

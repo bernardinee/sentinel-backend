@@ -102,6 +102,32 @@ def test_assign_unit_updates_both_sides(client):
     assert "AMB-01" in assign[0]["note"]
 
 
+def test_responding_units_keep_their_route(client):
+    """Once dispatched a unit leaves `options` (it is no longer available), but
+    its route must still reach the dispatcher — that is the path they actually
+    need to watch. It comes back under `responding`."""
+    _register(client, "AMB-01", "AMBULANCE", 5.6510, -0.1870)
+    _register(client, "POL-01", "POLICE", 5.6480, -0.1880)
+    iid = _incident(client)
+
+    before = client.get(f"/api/v1/incidents/{iid}/dispatch-options",
+                        headers=HEADERS).json()
+    assert {o["unit"]["call_sign"] for o in before["options"]} == {"AMB-01", "POL-01"}
+    assert before["responding"] == []
+
+    client.post(f"/api/v1/incidents/{iid}/assign-unit", headers=HEADERS,
+                json={"call_sign": "AMB-01", "actor": "d"})
+
+    after = client.get(f"/api/v1/incidents/{iid}/dispatch-options",
+                       headers=HEADERS).json()
+    assert {o["unit"]["call_sign"] for o in after["options"]} == {"POL-01"}, \
+        "a dispatched unit is no longer offered"
+    responding = {o["unit"]["call_sign"] for o in after["responding"]}
+    assert responding == {"AMB-01"}, "but it still reports a route"
+    assert len(after["responding"][0]["route"]["geometry"]) >= 2
+    assert after["responding"][0]["eta_min"] > 0
+
+
 def test_busy_unit_cannot_take_a_second_incident(client):
     _register(client, "AMB-01", "AMBULANCE", 5.6510, -0.1870)
     first = _incident(client)

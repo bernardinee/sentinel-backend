@@ -325,7 +325,12 @@ class DispatchOptions(BaseModel):
     incident_lat: float
     incident_lon: float
     required_types: list[str]
+    #: Units free to be sent, fastest first.
     options: list[DispatchOption]
+    #: Units already committed to THIS incident, with their live routes. Kept
+    #: separate from `options` (which means "available to dispatch") because a
+    #: responding unit's route is what the dispatcher most needs on the map.
+    responding: list[DispatchOption] = []
     routing_source: str
     note: str | None = None
 
