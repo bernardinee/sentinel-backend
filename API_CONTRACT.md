@@ -1,0 +1,318 @@
+# Sentinel API Contract
+
+Version 1.0 · all endpoints are under `/api/v1` · written to Chapter 3 appendix standard.
+
+Every request carries a shared secret in an `X-API-Key` header. The key maps to a
+role (`device`, `driver`, `responder`) through a config map; the dependency that
+resolves it is the seam where real JWT auth drops in later without touching any
+route handler.
+
+```
+X-API-Key: <shared secret>
+Content-Type: application/json
+```
+
+Responses are Pydantic-validated. Errors use FastAPI's shape:
+`{"detail": "<message>"}` — except validation errors, which return the standard
+422 body listing the offending field.
+
+| Code | Meaning |
+|---|---|
+| 200 | OK (also returned for an idempotent replay of an existing `event_id`) |
+| 201 | Created (`/panic`, contact creation) |
+| 204 | Deleted, no body |
+| 401 | Missing or invalid `X-API-Key` |
+| 403 | Valid key, insufficient role |
+| 404 | Unknown incident / device / contact |
+| 409 | Illegal dispatch-state transition |
+| 422 | Payload failed validation (sample count, `fs_hz`, units, unit-scale assertion) |
+| 502 | — *not used*: ML failures never fail ingest, see §Graceful degradation |
+
+---
+
+## 1. Ingest (device → backend)
+
+### `POST /api/v1/events`
+
+The main path. One call per detected crash.
+
+**Request**
+
+```json
+{
+  "device_id": "ESP32_ACC_001",
+  "event_id": "ESP32_ACC_001-0007-00412337",
+  "detected_at": "2026-09-14T10:22:41Z",
+  "trigger": { "peak_g": 3.41, "jerk_gs": 159.27 },
+  "gps": {
+    "lat": 5.6581, "lon": -0.1812, "valid": true,
+    "satellites": 7, "speed_kmh": 42.3, "hdop": 1.2
+  },
+  "device": {
+    "uptime_s": 41233, "free_heap": 142000,
+    "rssi": -61, "firmware_version": "2.0.0"
+  },
+  "window": {
+    "fs_hz": 100, "units_accel": "g", "units_gyro": "deg_s",
+    "ax": [500 floats], "ay": [500 floats], "az": [500 floats],
+    "gx": [500 floats], "gy": [500 floats], "gz": [500 floats]
+  }
+}
+```
+
+`detected_at`, `gps`, and `device` are optional; everything else is required.
+
+**Validation — all failures are loud, none are silently repaired**
+
+| Rule | Failure |
+|---|---|
+| each of `ax`…`gz` is exactly 500 samples | 422, names the field and the count received |
+| `fs_hz == 100` | 422 |
+| `units_accel == "g"` | 422 |
+| median resultant magnitude ≤ 5 | 422, names the likely m/s² mistake |
+
+The last rule is the unit assertion. Gravity is ≈1.0 g but ≈9.81 m/s², so a
+median resultant above 5 means the sender is in m/s². The backend rejects rather
+than rescaling, because a silent rescale is how a whole training class was
+invalidated once before.
+
+**Handler sequence** (order is load-bearing)
+
+1. Validate.
+2. Idempotency check on `event_id` — if it exists, return the stored incident.
+   Inference does **not** re-run.
+3. Upsert the device, touch `last_seen_at`.
+4. Persist the incident **and the raw 500×6 window** — before any ML call.
+5. Call the ML API (10 s timeout, 2 retries with backoff) or run inference
+   in-process when `INFERENCE_MODE=local`.
+6. Write the classification back onto the incident.
+7. Broadcast `incident.created` over the WebSocket.
+8. Return the flat ACK.
+
+**Response — deliberately small and flat (one level, no nesting)**
+
+```json
+{
+  "event_id": "ESP32_ACC_001-0007-00412337",
+  "severity_class": 1,
+  "severity_name": "Moderate",
+  "confidence": 0.772,
+  "p_crash": 0.8105,
+  "accident_confirmed": true,
+  "label_source": "model+signature",
+  "peak_g": 6.501,
+  "classification_pending": false
+}
+```
+
+Measured at 246 bytes for a real crash — the ESP32 parses it into a 512-byte
+document on a constrained heap, so the shape must not grow or nest.
+
+When the ML API is unreachable, the incident is still stored and broadcast, and
+the ACK carries `classification_pending: true` with `severity_class: null`. The
+device then falls back to its local threshold decision.
+
+### `POST /api/v1/heartbeat`
+
+Sent every 30 s. Updates the device row and appends to `device_heartbeats`;
+broadcasts a `device_status` frame.
+
+```json
+{
+  "device_id": "ESP32_ACC_001",
+  "gps": { "lat": 5.6581, "lon": -0.1812, "valid": true, "satellites": 7 },
+  "device": { "uptime_s": 41233, "free_heap": 142000, "rssi": -61 },
+  "battery_v": 3.9
+}
+```
+
+Response: `{"ok": true}`. A device is considered **offline** after 90 s without a
+heartbeat (three missed beats).
+
+---
+
+## 2. Query
+
+### `GET /api/v1/incidents`
+
+Filters: `status`, `severity_class`, `device_id`, `accident_confirmed`, `from`,
+`to`, `page`, `page_size` (default 50, max 500). Sorted `received_at` desc.
+
+```json
+{ "items": [ IncidentOut, … ], "total": 42, "page": 1, "page_size": 50 }
+```
+
+`from` is also how the dashboard backfills after a WebSocket reconnect.
+
+**`IncidentOut`**
+
+| Field | Type | Notes |
+|---|---|---|
+| `id`, `event_id`, `device_id` | string | `device_id` is the internal UUID |
+| `detected_at`, `received_at` | datetime | device clock / server clock |
+| `severity_class` | 0\|1\|2\|null | null while pending |
+| `severity_name` | string\|null | Normal / Moderate / Severe |
+| `confidence`, `p_crash` | float\|null | |
+| `model_severity` | string\|null | what the model alone said |
+| `accident_confirmed` | bool\|null | |
+| `probabilities` | object\|null | `{Normal, Moderate, Severe}` |
+| `peak_g`, `excursion_ms`, `impulse_gs` | float\|null | measured on the 20 Hz low-passed window |
+| `signature_match` | bool\|null | physics gate verdict |
+| `label_source` | string\|null | see below |
+| `unit_scale_applied` | float\|null | 1.0 = already in g |
+| `inference_time_ms` | float\|null | |
+| `classification_pending` | bool | true = ML retry queued |
+| `trigger_peak_g`, `trigger_jerk_gs` | float\|null | what the device measured |
+| `lat`, `lon`, `gps_valid`, `satellites`, `speed_kmh` | | |
+| `status` | enum | new / acknowledged / dispatched / resolved / false_alarm |
+| `acknowledged_at`, `acknowledged_by`, `resolved_at`, `notes` | | |
+
+**`label_source` values** — this field must reach the dashboard:
+
+| Value | Meaning |
+|---|---|
+| `model+signature` | P(crash) cleared the alert threshold **and** the physics signature agreed. A real detection. |
+| `signature_override` | P(crash) cleared the threshold but the physics gate rejected it (peak outside 2–7 g, or transient outside 40–250 ms) and forced Normal. |
+| `model` | P(crash) stayed below the threshold. No crash. |
+| `manual_panic` | Human pressed the button. Model bypassed entirely; excluded from all statistics. |
+
+Note `signature_override` does **not** imply the model's argmax was a crash
+class — the gate fires on P(crash) crossing the threshold, which can happen
+while the top class is still Normal.
+
+### Other query endpoints
+
+| Endpoint | Returns |
+|---|---|
+| `GET /api/v1/incidents/active` | Everything not resolved/false_alarm, severity desc then recency. The responder triage queue. |
+| `GET /api/v1/incidents/{id}` | `IncidentOut` + `dispatch_events[]` |
+| `GET /api/v1/incidents/{id}/window` | `{incident_id, fs_hz, ax…gz}` — the stored 500×6 evidence. Separate endpoint so lists stay light. |
+| `GET /api/v1/devices` | `DeviceOut[]`, status computed live from heartbeat age |
+| `GET /api/v1/devices/{device_id}` | one `DeviceOut` |
+| `GET /api/v1/devices/{device_id}/heartbeats?hours=24` | `HeartbeatOut[]` ascending |
+| `GET /api/v1/stats/summary` | see below |
+| `GET /api/v1/ml/health` | proxy of the ML API `/health` (or local model metadata) |
+
+**`GET /api/v1/stats/summary`**
+
+```json
+{
+  "total_incidents": 6,
+  "by_severity": {"Normal": 2, "Moderate": 4, "Severe": 0, "pending": 0},
+  "by_label_source": {"model+signature": 5, "signature_override": 1},
+  "by_status": {"new": 5, "acknowledged": 1},
+  "mean_inference_ms": 17.11,
+  "mean_end_to_end_s": 2.45,
+  "last_24h": 6, "last_7d": 6, "last_30d": 6
+}
+```
+
+`manual_panic` incidents are excluded from every figure here. `mean_end_to_end_s`
+is `received_at − detected_at`, discarding clock-skew outliers outside 0–3600 s.
+
+---
+
+## 3. Actions
+
+All three write a `dispatch_events` row and broadcast `incident.updated`. The
+mission timeline is derived from that table, never from incident columns alone.
+
+| Endpoint | Body | Legal from |
+|---|---|---|
+| `POST /api/v1/incidents/{id}/acknowledge` | `{actor, note?}` | `new` |
+| `POST /api/v1/incidents/{id}/dispatch` | `{actor, action: assign\|en_route\|on_scene, note?}` | `acknowledged`, `dispatched` (`on_scene` needs `dispatched`) |
+| `POST /api/v1/incidents/{id}/resolve` | `{actor, outcome: resolved\|false_alarm, note?}` | `new`, `acknowledged`, `dispatched` |
+
+An illegal transition returns **409** with the current status named. Acting on a
+closed incident is always 409.
+
+---
+
+## 4. Sentinel app hooks
+
+Endpoints are live now; the mobile app consumes them later with no backend
+change.
+
+### Driver role
+
+| Endpoint | Purpose |
+|---|---|
+| `GET /api/v1/me/protection-status?device_id=` | Drives the app's green/amber/red status ring |
+| `POST /api/v1/panic` | `{device_id, lat?, lon?, note?}` → creates a `severity_class: 2`, `label_source: "manual_panic"`, `accident_confirmed: true` incident. **Bypasses the model by design** and is excluded from statistics. Returns 201 + `IncidentOut`. |
+| `GET /api/v1/me/incidents?device_id=` | Own history, newest first, capped at 200 |
+| `GET\|POST\|PATCH\|DELETE /api/v1/devices/{device_id}/contacts[/{id}]` | Emergency contact CRUD |
+
+**`protection-status`**
+
+```json
+{
+  "device_id": "ESP32_ACC_001",
+  "registered": true, "online": true, "monitoring_active": true,
+  "gps_locked": true, "satellites": 7,
+  "last_heartbeat_at": "2026-09-14T11:32:18Z",
+  "last_heartbeat_age_s": 12.4,
+  "open_incidents": 1
+}
+```
+
+An unregistered `device_id` returns `registered: false` with everything else
+false/null rather than 404 — the app shows "not set up", not an error.
+
+The emergency-contact table is for the app. The ESP32 keeps its own hardcoded
+SMS list, deliberately, so the fail-safe works with no backend at all.
+
+### Responder role
+
+Reuses §2 and §3, plus `GET /api/v1/incidents/active`.
+
+---
+
+## 5. WebSocket
+
+```
+WS /ws/incidents?api_key=<key>
+```
+
+The key travels as a query parameter because browsers cannot set headers on a
+WebSocket handshake. An invalid key closes with code **4401**.
+
+**Envelope**
+
+```json
+{ "type": "incident.created" | "incident.updated" | "device_status" | "ping",
+  "at": "2026-09-14T11:32:18.463Z",
+  "data": { … } }
+```
+
+- `incident.created` / `incident.updated` → `data` is a full `IncidentOut`.
+- `device_status` → `{device_id, status, last_seen_at, lat, lon, satellites, uptime_s, free_heap, rssi, battery_v}`.
+- `ping` → server keepalive every 20 s; the client replies `{"type":"pong"}`.
+
+**Client obligations**
+
+1. Reconnect with exponential backoff (1, 2, 4, 8, 15, 30 s).
+2. On every successful **re**connect, call
+   `GET /api/v1/incidents?from=<last received_at seen>` and merge the result.
+
+A dashboard that silently misses an incident because a socket dropped is worse
+than no dashboard, so the backfill is not optional.
+
+---
+
+## 6. Graceful degradation
+
+If the ML API is unreachable at ingest:
+
+- the incident and its raw window are **already persisted** (step 4 precedes the
+  ML call), so nothing is lost;
+- `classification_pending` is set and the incident is broadcast anyway, so it
+  appears on the dashboard immediately;
+- a background task retries every 60 s, in batches of 10 oldest-first, and
+  broadcasts `incident.updated` when a backfill lands;
+- the device receives a pending ACK and falls back to its local decision.
+
+`INFERENCE_MODE=local` removes the dependency altogether by loading
+`artifacts/phase2_xgboost_calibrated.joblib` and running the **same vendored
+inference code** in-process — identical 20 Hz Butterworth low-pass, identical 25
+features, identical signature gate. It is a vendored copy rather than a
+reimplementation precisely to avoid train/serve skew.

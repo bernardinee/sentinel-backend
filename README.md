@@ -1,0 +1,107 @@
+# sentinel-backend
+
+The middle tier of an ML-based road accident detection and severity
+classification system. It turns a crash detected on an ESP32 into something a
+responder can see: it receives the raw IMU window, classifies it, stores it, and
+pushes it live to the dashboard.
+
+It is the only component that talks to the ML API, and it is the system of
+record.
+
+- **API reference** → [API_CONTRACT.md](API_CONTRACT.md)
+- **Design and rationale** → [ARCHITECTURE.md](ARCHITECTURE.md)
+- **Deploying** → [DEPLOYMENT.md](DEPLOYMENT.md)
+
+## Quick start
+
+```bash
+cp .env.example .env        # edit API_KEY
+docker compose up --build   # Postgres on 5433, backend on 8080
+```
+
+Without Docker, SQLite works and needs no server:
+
+```bash
+pip install -r requirements.txt
+export DATABASE_URL="sqlite:///./dev.db"
+export INFERENCE_MODE=local
+alembic upgrade head
+uvicorn app.main:app --port 8080
+```
+
+Then, using a stored real capture:
+
+```bash
+python scripts/replay.py scripts/samples/4_Real_crash_4_g___90_ms.json \
+  --lat 5.6581 --lon -0.1812
+```
+
+```
+HTTP 200 in 2478 ms  (event_id=replay-…)
+{ "severity_name": "Moderate", "accident_confirmed": true,
+  "label_source": "model+signature", "peak_g": 4.404 }
+```
+
+## Inference modes
+
+| `INFERENCE_MODE` | Behaviour |
+|---|---|
+| `remote` | POSTs to `ML_API_URL/predict`, 10 s timeout, 2 retries with backoff |
+| `local` | Loads `artifacts/phase2_xgboost_calibrated.joblib` and runs the **same vendored code** in-process — no network, identical decisions |
+
+Local mode exists so a demonstration never depends on a hosted deployment. It is
+a vendored copy of the ML API's inference path rather than a reimplementation,
+because hand-duplicated feature extraction is how train/serve skew gets in.
+
+## What the classifier does
+
+```
+p_crash = P(Moderate) + P(Severe)
+signature = 2 g ≤ peak < 7 g  AND  40 ms ≤ longest excursion above 2 g ≤ 250 ms
+```
+
+Both must agree for a crash. If `p_crash` clears the threshold but the physics
+signature does not hold, the label is forced to Normal and `label_source` is
+`signature_override`. Severity above Moderate is graded by impulse (≥ 0.959 g·s),
+**never by peak height** — a brief 12 g spike from a dropped device is Normal.
+
+Do not add a "but 12 g must surely be severe" rule anywhere. Removing exactly
+that rule is one of the project's findings.
+
+## Bundled sample windows
+
+`scripts/samples/` holds the Phase 2 validation vectors extracted from the ML
+API's own Postman suite — real recorded windows, including the negative case
+`2_Brief_12_g_spike__dropped_device_.json`, which must classify as
+`signature_override`. They are development fixtures; the demonstration path uses
+the live device.
+
+## Tests
+
+```bash
+python -m pytest -q     # 19 tests
+```
+
+Covering ingest validation (sample count, `fs_hz`, units, and the m/s² unit
+assertion), `event_id` idempotency, ML client retry and unavailability, the
+dispatch state machine, and panic exclusion from statistics. Two run the real
+model against real windows and assert the crash/override outcomes.
+
+Tests use SQLite and need no Docker.
+
+## Layout
+
+```
+app/
+  main.py                 FastAPI app, WS endpoint, background retry + prune
+  config.py  db.py  models.py  schemas.py  auth.py
+  modules/
+    ingest.py             validate → idempotency → persist → classify → broadcast
+    incidents.py devices.py dispatch.py stats.py sentinel.py ws.py
+    inference/
+      service.py          remote/local dispatcher, retries
+      phase2_vendored.py  verbatim port of the ML API inference path
+alembic/                  migrations
+artifacts/                model, feature names, calibrated thresholds
+scripts/replay.py         re-inject a stored capture through the full path
+```
