@@ -3,12 +3,29 @@ import json
 from functools import lru_cache
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic import field_validator
 
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     DATABASE_URL: str = "postgresql+psycopg2://sentinel:sentinel@localhost:5433/sentinel"
+
+    @field_validator("DATABASE_URL")
+    @classmethod
+    def _normalise_driver(cls, v: str) -> str:
+        """Accept a hosting provider's URL verbatim.
+
+        Railway, Heroku and friends hand out `postgres://` or `postgresql://`,
+        but SQLAlchemy 2 will not infer a DBAPI driver from those. Rather than
+        making every deployment hand-edit the scheme (and crash-loop when
+        someone forgets), normalise it here.
+        """
+        if v.startswith("postgres://"):
+            return "postgresql+psycopg2://" + v[len("postgres://"):]
+        if v.startswith("postgresql://"):
+            return "postgresql+psycopg2://" + v[len("postgresql://"):]
+        return v
     ML_API_URL: str = "https://accident-severity-api-production.up.railway.app"
     ML_TIMEOUT_S: float = 10.0
     INFERENCE_MODE: str = "remote"  # remote | local

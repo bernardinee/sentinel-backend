@@ -12,5 +12,8 @@ COPY artifacts ./artifacts
 COPY scripts ./scripts
 
 EXPOSE 8080
-# Railway injects PORT; default 8080 locally.
-CMD ["sh", "-c", "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8080}"]
+# start.sh waits for the database before migrating, so a container that boots
+# faster than the platform's private DNS does not crash-loop. Railway injects
+# PORT; 8080 locally.
+RUN chmod +x scripts/start.sh
+CMD ["sh", "scripts/start.sh"]
