@@ -143,6 +143,7 @@ network. Windows Firewall will prompt for port 8080 on first run — allow it.
    | `ML_API_URL` | `https://accident-severity-api-production.up.railway.app` |
    | `ML_TIMEOUT_S` | `10` |
    | `CORS_ORIGINS` | the Vercel URL, e.g. `https://sentinel-dashboard.vercel.app` |
+   | `DRIVER_APP_ORIGINS` | `https://sentinel-app-gold.vercel.app` |
    | `HEARTBEAT_RETENTION_DAYS` | `7` |
 
    `PORT` is injected by Railway; the Dockerfile's `CMD` already honours it.

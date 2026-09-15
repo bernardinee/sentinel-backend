@@ -37,10 +37,13 @@ class Settings(BaseSettings):
     ACCESS_TOKEN_MINUTES: int = 15
     REFRESH_TOKEN_DAYS: int = 30
     CORS_ORIGINS: str = "http://localhost:5173"
+    DRIVER_APP_ORIGINS: str = "https://sentinel-app-gold.vercel.app"
     HEARTBEAT_RETENTION_DAYS: int = 7
 
     def cors_origin_list(self) -> list[str]:
-        return [o.strip() for o in self.CORS_ORIGINS.split(",") if o.strip()]
+        values = [*self.CORS_ORIGINS.split(","),
+                  *self.DRIVER_APP_ORIGINS.split(",")]
+        return list(dict.fromkeys(o.strip() for o in values if o.strip()))
 
     def role_key_map(self) -> dict[str, str]:
         """Auth seam: key -> role. The primary API_KEY is a 'responder'.

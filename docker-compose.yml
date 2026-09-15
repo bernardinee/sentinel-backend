@@ -33,6 +33,7 @@ services:
       ACCESS_TOKEN_MINUTES: ${ACCESS_TOKEN_MINUTES:-15}
       REFRESH_TOKEN_DAYS: ${REFRESH_TOKEN_DAYS:-30}
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:5173}
+      DRIVER_APP_ORIGINS: ${DRIVER_APP_ORIGINS:-https://sentinel-app-gold.vercel.app}
     ports:
       - "8080:8080"
     command: >
