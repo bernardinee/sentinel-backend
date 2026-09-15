@@ -13,8 +13,9 @@ from app.auth import Principal, create_access_token, require_role
 from app.config import get_settings
 from app.db import get_db
 from app.models import Device, RefreshToken, User, as_aware, utcnow
-from app.schemas import (LoginIn, RefreshIn, RegisterIn, ResponderCreateIn,
-                         ResponderOut, ResponderPatch, TokenOut, UserOut)
+from app.schemas import (ChangePasswordIn, LoginIn, RefreshIn, RegisterIn,
+                         ResponderCreateIn, ResponderOut, ResponderPatch,
+                         TokenOut, UserOut)
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 password_hash = PasswordHash.recommended()
@@ -155,6 +156,47 @@ def logout(body: RefreshIn, db: Session = Depends(get_db)):
         stored.revoked_at = utcnow()
         db.commit()
     return Response(status_code=204)
+
+
+@router.post("/change-password", response_model=TokenOut)
+def change_password(
+    body: ChangePasswordIn,
+    principal: Principal = Depends(require_role("driver", "responder")),
+    db: Session = Depends(get_db),
+):
+    """Change your own password and return a fresh token pair.
+
+    Every existing refresh token is revoked, so a password change signs out
+    every other device — which is the whole point if the old password was
+    compromised. A new pair is issued for the caller so the session they are
+    sitting in survives.
+    """
+    if principal.user_id is None:
+        raise HTTPException(status_code=401, detail="Not an account session")
+    user = db.get(User, principal.user_id)
+    if user is None or not user.active:
+        raise HTTPException(status_code=401, detail="Account is unavailable")
+
+    if not password_hash.verify(body.current_password, user.password_hash):
+        raise HTTPException(status_code=401, detail="Current password is incorrect")
+    if password_hash.verify(body.new_password, user.password_hash):
+        raise HTTPException(status_code=400,
+                            detail="New password must differ from the current one")
+
+    now = utcnow()
+    user.password_hash = password_hash.hash(body.new_password)
+    user.updated_at = now
+    # Invalidate access tokens already in circulation, not just refresh tokens.
+    user.sessions_valid_from = now
+    db.execute(
+        update(RefreshToken)
+        .where(RefreshToken.user_id == user.id, RefreshToken.revoked_at.is_(None))
+        .values(revoked_at=utcnow())
+    )
+    db.flush()
+
+    device = db.get(Device, user.device_id) if user.device_id else None
+    return _token_out(db, user, device)
 
 
 @router.get("/me", response_model=UserOut)

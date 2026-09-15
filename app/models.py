@@ -61,6 +61,12 @@ class User(Base):
     device_id: Mapped[str | None] = mapped_column(
         ForeignKey("devices.id"), unique=True, index=True, nullable=True)
     active: Mapped[bool] = mapped_column(Boolean, default=True)
+    # Access tokens are stateless and live ~15 minutes, so revoking refresh
+    # tokens alone would leave a stolen session usable after a password change.
+    # Any token issued before this instant is rejected, making "change my
+    # password" sign out other devices immediately.
+    sessions_valid_from: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(

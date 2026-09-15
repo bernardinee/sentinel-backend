@@ -15,7 +15,7 @@ from sqlalchemy.orm import Session
 
 from app.config import get_settings
 from app.db import get_db
-from app.models import Device, User, utcnow
+from app.models import Device, User, as_aware, utcnow
 
 api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
 bearer_header = HTTPBearer(auto_error=False)
@@ -72,6 +72,12 @@ def principal_from_access_token(token: str, db: Session) -> Principal:
     user = db.get(User, str(payload["sub"]))
     if user is None or not user.active:
         raise HTTPException(status_code=401, detail="Account is unavailable")
+
+    # Tokens minted before the account's cutoff are dead, so a password change
+    # takes effect at once rather than after the access token expires.
+    cutoff = as_aware(user.sessions_valid_from)
+    if cutoff is not None and int(payload.get("iat", 0)) < int(cutoff.timestamp()):
+        raise HTTPException(status_code=401, detail="Session ended; sign in again")
 
     device = db.get(Device, user.device_id) if user.device_id else None
     if user.device_id and device is None:

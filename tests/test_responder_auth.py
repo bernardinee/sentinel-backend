@@ -203,3 +203,94 @@ def test_cannot_lock_the_team_out(client):
     # the deactivated colleague is locked out immediately
     assert client.post("/api/v1/auth/login", json={
         "email": "p@example.gh", "password": "partner-secret-123"}).status_code == 401
+
+
+# ── Changing your own password ───────────────────────────────────────────────
+
+NEW_PASSWORD = "brand-new-secret-2026"
+
+
+def test_change_password_revokes_other_sessions(client):
+    _make_responder()
+    first = _login(client)
+    other = _login(client)            # a second device
+    auth = {"Authorization": f"Bearer {first['access_token']}"}
+
+    r = client.post("/api/v1/auth/change-password", headers=auth, json={
+        "current_password": PASSWORD, "new_password": NEW_PASSWORD})
+    assert r.status_code == 200
+    fresh = r.json()
+    assert fresh["refresh_token"] not in (first["refresh_token"], other["refresh_token"])
+
+    # the caller keeps working on the pair just issued
+    assert client.get("/api/v1/units",
+                      headers={"Authorization": f"Bearer {fresh['access_token']}"}
+                      ).status_code == 200
+
+    # every previously issued refresh token is dead
+    for token in (first["refresh_token"], other["refresh_token"]):
+        assert client.post("/api/v1/auth/refresh",
+                           json={"refresh_token": token}).status_code == 401
+
+    # only the new password authenticates
+    assert client.post("/api/v1/auth/login", json={
+        "email": "ops@sentinel.gh", "password": PASSWORD}).status_code == 401
+    assert client.post("/api/v1/auth/login", json={
+        "email": "ops@sentinel.gh", "password": NEW_PASSWORD}).status_code == 200
+
+
+def test_session_cutoff_kills_live_access_tokens(client):
+    """Access tokens are stateless and last ~15 min, so revoking refresh tokens
+    alone would leave a stolen session usable. The cutoff closes that window.
+
+    Set directly rather than by sleeping past a second boundary, so the test is
+    deterministic instead of racing the clock.
+    """
+    from datetime import timedelta
+    from app.models import utcnow
+
+    user_id = _make_responder()
+    auth = {"Authorization": f"Bearer {_login(client)['access_token']}"}
+    assert client.get("/api/v1/units", headers=auth).status_code == 200
+
+    with SessionLocal() as db:
+        db.get(User, user_id).sessions_valid_from = utcnow() + timedelta(seconds=5)
+        db.commit()
+
+    resp = client.get("/api/v1/units", headers=auth)
+    assert resp.status_code == 401
+    assert "sign in again" in resp.json()["detail"].lower()
+
+
+def test_change_password_requires_the_current_one(client):
+    """An unattended browser must not be enough to seize the account."""
+    _make_responder()
+    auth = {"Authorization": f"Bearer {_login(client)['access_token']}"}
+
+    r = client.post("/api/v1/auth/change-password", headers=auth, json={
+        "current_password": "not-the-password", "new_password": NEW_PASSWORD})
+    assert r.status_code == 401
+
+    # unchanged: the original password still works
+    assert client.post("/api/v1/auth/login", json={
+        "email": "ops@sentinel.gh", "password": PASSWORD}).status_code == 200
+
+
+def test_change_password_rejects_reuse_and_short_passwords(client):
+    _make_responder()
+    auth = {"Authorization": f"Bearer {_login(client)['access_token']}"}
+
+    same = client.post("/api/v1/auth/change-password", headers=auth, json={
+        "current_password": PASSWORD, "new_password": PASSWORD})
+    assert same.status_code == 400
+
+    short = client.post("/api/v1/auth/change-password", headers=auth, json={
+        "current_password": PASSWORD, "new_password": "short"})
+    assert short.status_code == 422
+
+
+def test_change_password_needs_authentication(client):
+    _make_responder()
+    r = client.post("/api/v1/auth/change-password", json={
+        "current_password": PASSWORD, "new_password": NEW_PASSWORD})
+    assert r.status_code == 401

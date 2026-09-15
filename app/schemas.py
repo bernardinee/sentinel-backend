@@ -122,6 +122,17 @@ class RegisterIn(BaseModel):
         return value
 
 
+class ChangePasswordIn(BaseModel):
+    """Change your own password.
+
+    The current password is required even though the caller is already
+    authenticated: an access token sitting in an unattended browser should not
+    be enough to take permanent ownership of the account.
+    """
+    current_password: str = Field(min_length=1, max_length=128)
+    new_password: str = Field(min_length=12, max_length=128)
+
+
 class ResponderCreateIn(BaseModel):
     """Create a colleague's dispatch-console account.
 
