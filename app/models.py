@@ -55,8 +55,11 @@ class User(Base):
     phone: Mapped[str] = mapped_column(String(32))
     password_hash: Mapped[str] = mapped_column(String(512))
     role: Mapped[str] = mapped_column(String(16), default="driver")
-    device_id: Mapped[str] = mapped_column(
-        ForeignKey("devices.id"), unique=True, index=True)
+    # Drivers own exactly one device; responders own none, so this is nullable.
+    # Still unique, which keeps "one driver per device" enforced — SQL treats
+    # multiple NULLs as distinct, so any number of responders coexist.
+    device_id: Mapped[str | None] = mapped_column(
+        ForeignKey("devices.id"), unique=True, index=True, nullable=True)
     active: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow)

@@ -137,7 +137,9 @@ class UserOut(BaseModel):
     email: str
     phone: str
     role: str
-    device_id: str
+    #: Drivers are bound to one device; responders are not, so this is null
+    #: for them.
+    device_id: str | None = None
 
 
 class TokenOut(BaseModel):

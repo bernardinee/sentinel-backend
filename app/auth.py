@@ -30,7 +30,9 @@ class Principal:
     device_id: str | None = None
 
 
-def create_access_token(user: User, device: Device) -> tuple[str, int]:
+def create_access_token(user: User, device: Device | None) -> tuple[str, int]:
+    """Mint an access token. `device` is None for responders, who dispatch
+    across the whole fleet rather than owning a single node."""
     settings = get_settings()
     now = utcnow()
     expires_in = settings.ACCESS_TOKEN_MINUTES * 60
@@ -38,8 +40,8 @@ def create_access_token(user: User, device: Device) -> tuple[str, int]:
         {
             "sub": user.id,
             "role": user.role,
-            "did": device.id,
-            "device_id": device.device_id,
+            "did": device.id if device is not None else None,
+            "device_id": device.device_id if device is not None else None,
             "type": "access",
             "iat": now,
             "exp": now + timedelta(seconds=expires_in),
@@ -70,17 +72,22 @@ def principal_from_access_token(token: str, db: Session) -> Principal:
     user = db.get(User, str(payload["sub"]))
     if user is None or not user.active:
         raise HTTPException(status_code=401, detail="Account is unavailable")
-    device = db.get(Device, user.device_id)
-    if device is None:
+
+    device = db.get(Device, user.device_id) if user.device_id else None
+    if user.device_id and device is None:
         raise HTTPException(status_code=401, detail="Account device is unavailable")
-    if payload.get("did") != device.id or payload.get("role") != user.role:
+    # Re-check the claims against the live row so a token stops working the
+    # moment a role is changed or a device is re-linked.
+    if payload.get("role") != user.role:
+        raise HTTPException(status_code=401, detail="Stale access token")
+    if payload.get("did") != (device.id if device is not None else None):
         raise HTTPException(status_code=401, detail="Stale access token")
     return Principal(
         role=user.role,
         subject=user.email,
         user_id=user.id,
-        device_db_id=device.id,
-        device_id=device.device_id,
+        device_db_id=device.id if device is not None else None,
+        device_id=device.device_id if device is not None else None,
     )
 
 

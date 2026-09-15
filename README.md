@@ -42,6 +42,22 @@ HTTP 200 in 2478 ms  (event_id=replay-…)
   "label_source": "model+signature", "peak_g": 4.404 }
 ```
 
+## Responder accounts (dispatch console)
+
+Responders sign in to the dashboard with an email and password; the console no
+longer ships an API key to the browser. Accounts are provisioned out of band:
+
+```bash
+python scripts/create_responder.py --email ops@sentinel.gh --name "Control Room"
+```
+
+`/auth/register` mints **drivers only**, deliberately. If it could create
+responders, anyone who reached the API could grant themselves dispatch control
+of the whole fleet, so responder accounts are created against the database by an
+operator instead. Use `--reset-password` to rotate one and `--deactivate` to
+disable it — deactivation takes effect immediately, including for tokens already
+issued.
+
 ## Driver authentication and live updates
 
 Driver accounts register and sign in through `/api/v1/auth/*`. Passwords are
@@ -107,7 +123,7 @@ those routes so a guess never reads as a road route.
 ## Tests
 
 ```bash
-python -m pytest -q     # 33 tests
+python -m pytest -q     # 39 tests
 ```
 
 Covering ingest validation (sample count, `fs_hz`, units, and the m/s² unit
@@ -138,4 +154,5 @@ alembic/                  migrations
 artifacts/                model, feature names, calibrated thresholds
 scripts/replay.py         re-inject a stored capture through the full path
 scripts/register_fleet.py load the Accra responder roster
+scripts/create_responder.py provision a dispatch-console account
 ```

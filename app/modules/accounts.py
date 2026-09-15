@@ -24,14 +24,14 @@ def _digest(raw_token: str) -> str:
     return hashlib.sha256(raw_token.encode("utf-8")).hexdigest()
 
 
-def _user_out(user: User, device: Device) -> UserOut:
+def _user_out(user: User, device: Device | None) -> UserOut:
     return UserOut(
         id=user.id,
         name=user.name,
         email=user.email,
         phone=user.phone,
         role=user.role,
-        device_id=device.device_id,
+        device_id=device.device_id if device is not None else None,
     )
 
 
@@ -44,7 +44,7 @@ def _new_refresh_token(user: User) -> tuple[str, RefreshToken]:
     )
 
 
-def _token_out(db: Session, user: User, device: Device) -> TokenOut:
+def _token_out(db: Session, user: User, device: Device | None) -> TokenOut:
     raw_refresh, stored_refresh = _new_refresh_token(user)
     db.add(stored_refresh)
     db.commit()
@@ -96,8 +96,8 @@ def login(body: LoginIn, db: Session = Depends(get_db)):
     valid = password_hash.verify(body.password, candidate_hash)
     if user is None or not valid or not user.active:
         raise HTTPException(status_code=401, detail="Invalid email or password")
-    device = db.get(Device, user.device_id)
-    if device is None:
+    device = db.get(Device, user.device_id) if user.device_id else None
+    if user.device_id and device is None:
         raise HTTPException(status_code=409, detail="Account device is unavailable")
     return _token_out(db, user, device)
 
@@ -127,8 +127,8 @@ def refresh(body: RefreshIn, db: Session = Depends(get_db)):
     user = db.get(User, stored.user_id)
     if user is None or not user.active:
         raise HTTPException(status_code=401, detail="Account is unavailable")
-    device = db.get(Device, user.device_id)
-    if device is None:
+    device = db.get(Device, user.device_id) if user.device_id else None
+    if user.device_id and device is None:
         raise HTTPException(status_code=409, detail="Account device is unavailable")
 
     raw_refresh, replacement = _new_refresh_token(user)
@@ -158,11 +158,15 @@ def logout(body: RefreshIn, db: Session = Depends(get_db)):
 
 @router.get("/me", response_model=UserOut)
 def me(
-    principal: Principal = Depends(require_role("driver")),
+    principal: Principal = Depends(require_role("driver", "responder")),
     db: Session = Depends(get_db),
 ):
+    """Profile for whoever is signed in. Serves both roles, so the dashboard
+    can restore a session on reload the same way the mobile app does."""
+    if principal.user_id is None:
+        raise HTTPException(status_code=401, detail="Not an account session")
     user = db.get(User, principal.user_id)
-    device = db.get(Device, principal.device_db_id)
-    if user is None or device is None:
+    if user is None:
         raise HTTPException(status_code=401, detail="Account is unavailable")
+    device = db.get(Device, principal.device_db_id) if principal.device_db_id else None
     return _user_out(user, device)
