@@ -134,6 +134,11 @@ network. Windows Firewall will prompt for port 8080 on first run — allow it.
    |---|---|
    | `DATABASE_URL` | `postgresql+psycopg2://…` (from the Postgres service) |
    | `API_KEY` | a real secret — not the `.env.example` default |
+   | `JWT_SECRET` | a separate, randomly generated secret of at least 32 characters |
+   | `JWT_ISSUER` | `sentinel-backend` |
+   | `JWT_AUDIENCE` | `sentinel-mobile` |
+   | `ACCESS_TOKEN_MINUTES` | `15` |
+   | `REFRESH_TOKEN_DAYS` | `30` |
    | `INFERENCE_MODE` | `remote`, or `local` to be independent of the ML API |
    | `ML_API_URL` | `https://accident-severity-api-production.up.railway.app` |
    | `ML_TIMEOUT_S` | `10` |
@@ -164,9 +169,10 @@ Railway too.
    backend.
 
 `VITE_*` values are inlined at build time, so changing one requires a redeploy,
-and anything in them is visible to anyone who opens the bundle. The shared key is
-adequate for a thesis demo and deliberately not presented as production auth —
-the API-key dependency is the seam where real JWT auth drops in.
+and anything in them is visible to anyone who opens the bundle. The dashboard's
+shared key is adequate for a thesis demo and deliberately not presented as
+production operator auth. The mobile app does not embed this key: drivers use
+short-lived JWT access tokens with rotating refresh tokens.
 
 ### Why a raster basemap and no Mapbox token
 

@@ -7,6 +7,7 @@ from pathlib import Path
 
 os.environ.setdefault("DATABASE_URL", "sqlite:///./test_sentinel.db")
 os.environ.setdefault("API_KEY", "test-key")
+os.environ.setdefault("JWT_SECRET", "test-only-jwt-secret-at-least-32-bytes")
 os.environ.setdefault("ROLE_KEYS", json.dumps({"device-key": "device", "driver-key": "driver"}))
 os.environ.setdefault("INFERENCE_MODE", "remote")
 

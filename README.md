@@ -15,7 +15,7 @@ record.
 ## Quick start
 
 ```bash
-cp .env.example .env        # edit API_KEY
+cp .env.example .env        # edit API_KEY and JWT_SECRET
 docker compose up --build   # Postgres on 5433, backend on 8080
 ```
 
@@ -41,6 +41,18 @@ HTTP 200 in 2478 ms  (event_id=replay-…)
 { "severity_name": "Moderate", "accident_confirmed": true,
   "label_source": "model+signature", "peak_g": 4.404 }
 ```
+
+## Driver authentication and live updates
+
+Driver accounts register and sign in through `/api/v1/auth/*`. Passwords are
+stored as Argon2 hashes. Access tokens expire after 15 minutes; opaque refresh
+tokens last 30 days, rotate on every use, and are stored hashed in PostgreSQL.
+Reusing a rotated token revokes the user's remaining sessions.
+
+Each driver account is linked to one Sentinel device. Driver REST calls and
+WebSocket events are restricted to that device, while the responder dashboard
+continues to use a responder API key. Set a long, random `JWT_SECRET` in every
+non-local deployment.
 
 ## Inference modes
 
@@ -95,7 +107,7 @@ those routes so a guess never reads as a road route.
 ## Tests
 
 ```bash
-python -m pytest -q     # 26 tests
+python -m pytest -q     # 33 tests
 ```
 
 Covering ingest validation (sample count, `fs_hz`, units, and the m/s² unit
@@ -115,6 +127,7 @@ app/
   config.py  db.py  models.py  schemas.py  auth.py
   modules/
     ingest.py             validate → idempotency → persist → classify → broadcast
+    accounts.py         driver registration, token rotation + logout
     incidents.py devices.py dispatch.py stats.py sentinel.py ws.py
     units.py              fleet roster, ETA ranking, assignment
     routing.py            OSRM road routes, cache, marked fallback

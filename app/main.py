@@ -6,16 +6,17 @@ import contextlib
 import logging
 from datetime import timedelta
 
-from fastapi import Depends, FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import Depends, FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import delete, select
 
-from app.auth import require_role
+from app.auth import (principal_from_access_token, principal_from_api_key,
+                      require_role)
 from app.config import get_settings
 from app.db import SessionLocal
-from app.models import DeviceHeartbeat, Incident, IncidentWindow, utcnow
-from app.modules import (devices, dispatch, incidents, ingest, sentinel, stats,
-                         units)
+from app.models import DeviceHeartbeat, Incident, IncidentWindow, RefreshToken, utcnow
+from app.modules import (accounts, devices, dispatch, incidents, ingest,
+                         sentinel, stats, units)
 from app.modules.inference.service import (InferenceUnavailable, classify,
                                            ml_health)
 from app.modules.ingest import _apply_classification
@@ -68,6 +69,8 @@ async def _prune_heartbeats() -> None:
             cutoff = utcnow() - timedelta(days=get_settings().HEARTBEAT_RETENTION_DAYS)
             with SessionLocal() as db:
                 db.execute(delete(DeviceHeartbeat).where(DeviceHeartbeat.at < cutoff))
+                db.execute(
+                    delete(RefreshToken).where(RefreshToken.expires_at < utcnow()))
                 db.commit()
         except Exception:
             log.exception("heartbeat prune loop error")
@@ -98,6 +101,7 @@ app.add_middleware(
 
 api = "/api/v1"
 app.include_router(ingest.router, prefix=api)
+app.include_router(accounts.router, prefix=api)
 app.include_router(incidents.router, prefix=api)
 app.include_router(dispatch.router, prefix=api)
 app.include_router(devices.router, prefix=api)
@@ -119,12 +123,36 @@ async def ml_api_health(_=Depends(require_role())):
 
 @app.websocket("/ws/incidents")
 async def ws_incidents(ws: WebSocket):
-    # API key via query param (browsers cannot set WS headers): ?api_key=...
-    key = ws.query_params.get("api_key")
-    if key not in get_settings().role_key_map():
+    # Mobile clients use a short-lived access token in the WebSocket protocol
+    # header, keeping credentials out of URLs and access logs. Header/query
+    # fallbacks remain for native clients and the existing dashboard.
+    authorization = ws.headers.get("authorization", "")
+    access_token = ws.query_params.get("access_token")
+    offered_protocols = [
+        value.strip()
+        for value in ws.headers.get("sec-websocket-protocol", "").split(",")
+        if value.strip()
+    ]
+    for protocol in offered_protocols:
+        if protocol.startswith("bearer."):
+            access_token = protocol[len("bearer."):]
+            break
+    if authorization.lower().startswith("bearer "):
+        access_token = authorization[7:].strip()
+    try:
+        with SessionLocal() as db:
+            if access_token:
+                principal = principal_from_access_token(access_token, db)
+            else:
+                key = ws.query_params.get("api_key")
+                if not key:
+                    raise HTTPException(status_code=401)
+                principal = principal_from_api_key(key)
+    except HTTPException:
         await ws.close(code=4401)
         return
-    await manager.connect(ws)
+    subprotocol = "sentinel-v1" if "sentinel-v1" in offered_protocols else None
+    await manager.connect(ws, principal, subprotocol=subprotocol)
     ping_task = asyncio.create_task(manager.keepalive(ws))
     try:
         while True:

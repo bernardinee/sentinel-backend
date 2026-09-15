@@ -46,6 +46,37 @@ class Device(Base):
     incidents: Mapped[list["Incident"]] = relationship(back_populates="device")
 
 
+class User(Base):
+    __tablename__ = "users"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    name: Mapped[str] = mapped_column(String(128))
+    email: Mapped[str] = mapped_column(String(320), unique=True, index=True)
+    phone: Mapped[str] = mapped_column(String(32))
+    password_hash: Mapped[str] = mapped_column(String(512))
+    role: Mapped[str] = mapped_column(String(16), default="driver")
+    device_id: Mapped[str] = mapped_column(
+        ForeignKey("devices.id"), unique=True, index=True)
+    active: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+
+class RefreshToken(Base):
+    __tablename__ = "refresh_tokens"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), index=True)
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    replaced_by_hash: Mapped[str | None] = mapped_column(String(64))
+
+
 class Incident(Base):
     __tablename__ = "incidents"
 

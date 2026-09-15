@@ -2,13 +2,14 @@
 
 Version 1.0 · all endpoints are under `/api/v1` · written to Chapter 3 appendix standard.
 
-Every request carries a shared secret in an `X-API-Key` header. The key maps to a
-role (`device`, `driver`, `responder`) through a config map; the dependency that
-resolves it is the seam where real JWT auth drops in later without touching any
-route handler.
+Device and responder integrations authenticate with a scoped shared secret.
+Driver endpoints authenticate with short-lived Bearer access tokens issued by
+the account endpoints.
 
 ```
 X-API-Key: <shared secret>
+# or, for a driver:
+Authorization: Bearer <access token>
 Content-Type: application/json
 ```
 
@@ -21,7 +22,7 @@ Responses are Pydantic-validated. Errors use FastAPI's shape:
 | 200 | OK (also returned for an idempotent replay of an existing `event_id`) |
 | 201 | Created (`/panic`, contact creation, unit registration) |
 | 204 | Deleted, no body |
-| 401 | Missing or invalid `X-API-Key` |
+| 401 | Missing, invalid, expired, or revoked authentication |
 | 403 | Valid key, insufficient role |
 | 404 | Unknown incident / device / contact / unit |
 | 409 | Illegal dispatch-state transition, duplicate call sign, unit already committed, or routing requested for an incident with no GPS fix |
@@ -316,8 +317,17 @@ the dispatcher reads one story rather than two. `available` and
 
 ## 4. Sentinel app hooks
 
-Endpoints are live now; the mobile app consumes them later with no backend
-change.
+The mobile app consumes these endpoints with a driver Bearer token.
+
+### Driver accounts
+
+| Endpoint | Purpose |
+|---|---|
+| `POST /api/v1/auth/register` | Create a driver linked to one `device_id`; returns an access/refresh token pair |
+| `POST /api/v1/auth/login` | Verify email/password and create a new token pair |
+| `POST /api/v1/auth/refresh` | Rotate the opaque refresh token and issue a new access token |
+| `POST /api/v1/auth/logout` | Revoke the supplied refresh token; returns 204 |
+| `GET /api/v1/auth/me` | Return the authenticated driver profile and linked device |
 
 ### Driver role
 
@@ -359,8 +369,11 @@ Reuses §2 and §3, plus `GET /api/v1/incidents/active`.
 WS /ws/incidents?api_key=<key>
 ```
 
-The key travels as a query parameter because browsers cannot set headers on a
-WebSocket handshake. An invalid key closes with code **4401**.
+The responder dashboard retains the API-key URL above. Driver clients connect to
+`/ws/incidents` with protocols `sentinel-v1` and `bearer.<access-token>`, which
+keeps the token out of the URL. Native clients may instead use an Authorization
+header. An invalid credential closes with code **4401**. Driver connections only
+receive incident and device events belonging to their linked device.
 
 **Envelope**
 
@@ -378,8 +391,9 @@ WebSocket handshake. An invalid key closes with code **4401**.
 **Client obligations**
 
 1. Reconnect with exponential backoff (1, 2, 4, 8, 15, 30 s).
-2. On every successful **re**connect, call
-   `GET /api/v1/incidents?from=<last received_at seen>` and merge the result.
+2. On every successful **re**connect, drivers call `GET /api/v1/me/incidents`
+   and responders call `GET /api/v1/incidents?from=<last received_at seen>`, then
+   merge the result.
 
 A dashboard that silently misses an incident because a socket dropped is worse
 than no dashboard, so the backfill is not optional.

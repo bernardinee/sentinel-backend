@@ -12,5 +12,7 @@ joblib>=1.4
 scikit-learn>=1.5
 xgboost>=2.0
 python-dotenv>=1.0
+PyJWT>=2.10
+pwdlib[argon2]>=0.3
 pytest>=8.2
 pytest-asyncio>=0.23

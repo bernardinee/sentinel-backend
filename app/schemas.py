@@ -96,6 +96,58 @@ class HeartbeatIn(BaseModel):
     battery_v: float | None = None
 
 
+# -- Driver authentication ---------------------------------------------------
+
+class RegisterIn(BaseModel):
+    name: str = Field(min_length=2, max_length=128)
+    email: str = Field(min_length=3, max_length=320)
+    phone: str = Field(min_length=7, max_length=32)
+    password: str = Field(min_length=8, max_length=128)
+    device_id: str = Field(min_length=1, max_length=64)
+
+    @field_validator("email")
+    @classmethod
+    def valid_email(cls, value: str) -> str:
+        email = value.strip().lower()
+        if email.count("@") != 1 or "." not in email.rsplit("@", 1)[1]:
+            raise ValueError("Enter a valid email address")
+        return email
+
+    @field_validator("name", "phone", "device_id")
+    @classmethod
+    def strip_required(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("Value cannot be blank")
+        return value
+
+
+class LoginIn(BaseModel):
+    email: str = Field(min_length=3, max_length=320)
+    password: str = Field(min_length=1, max_length=128)
+
+
+class RefreshIn(BaseModel):
+    refresh_token: str = Field(min_length=32, max_length=512)
+
+
+class UserOut(BaseModel):
+    id: str
+    name: str
+    email: str
+    phone: str
+    role: str
+    device_id: str
+
+
+class TokenOut(BaseModel):
+    access_token: str
+    refresh_token: str
+    token_type: Literal["bearer"] = "bearer"
+    expires_in: int
+    user: UserOut
+
+
 # ── Query (§5.2) ──────────────────────────────────────────────────────────────
 
 class DeviceOut(BaseModel):
@@ -353,6 +405,6 @@ class ContactOut(BaseModel):
     device_id: str
     name: str
     phone: str
-    relationship: str | None = Field(default=None, alias="relationship_")
+    relationship: str | None = Field(default=None, validation_alias="relationship_")
     priority: int
     active: bool

@@ -57,7 +57,7 @@ def _get_incident(db: Session, incident_id: str) -> Incident:
 # ── Roster CRUD (operator configuration) ─────────────────────────────────────
 
 @router.get("/units", response_model=list[UnitOut])
-def list_units(db: Session = Depends(get_db), _=Depends(require_role())):
+def list_units(db: Session = Depends(get_db), _=Depends(require_role("responder"))):
     rows = db.execute(
         select(ResponseUnit).order_by(ResponseUnit.unit_type, ResponseUnit.call_sign)
     ).scalars().all()
@@ -111,7 +111,7 @@ def delete_unit(call_sign: str, db: Session = Depends(get_db),
 @router.get("/incidents/{incident_id}/dispatch-options",
             response_model=DispatchOptions)
 async def dispatch_options(incident_id: str, db: Session = Depends(get_db),
-                           _=Depends(require_role())):
+                           _=Depends(require_role("responder"))):
     """Available units ranked by ROAD travel time to the scene.
 
     Two-stage: haversine to shortlist, then real routing on the shortlist. The

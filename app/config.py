@@ -31,6 +31,11 @@ class Settings(BaseSettings):
     INFERENCE_MODE: str = "remote"  # remote | local
     API_KEY: str = "change-me-sentinel-dev-key"
     ROLE_KEYS: str = ""  # optional JSON map {key: role}
+    JWT_SECRET: str = ""
+    JWT_ISSUER: str = "sentinel-backend"
+    JWT_AUDIENCE: str = "sentinel-mobile"
+    ACCESS_TOKEN_MINUTES: int = 15
+    REFRESH_TOKEN_DAYS: int = 30
     CORS_ORIGINS: str = "http://localhost:5173"
     HEARTBEAT_RETENTION_DAYS: int = 7
 
@@ -48,6 +53,10 @@ class Settings(BaseSettings):
             except json.JSONDecodeError:
                 pass
         return mapping
+
+    def jwt_signing_key(self) -> str:
+        """Use a dedicated JWT secret in production; API_KEY is a dev fallback."""
+        return self.JWT_SECRET or self.API_KEY
 
 
 @lru_cache

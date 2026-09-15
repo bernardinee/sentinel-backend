@@ -94,7 +94,7 @@ def _ack(incident: Incident) -> EventAck:
 async def ingest_event(
     body: EventIn,
     db: Session = Depends(get_db),
-    _=Depends(require_role()),  # device key or any valid key
+    _=Depends(require_role("device", "responder")),
 ):
     # 1. Validate — Pydantic enforced 500 samples / fs 100 / units "g" already;
     #    this is the semantic unit assertion on the actual data.
@@ -152,7 +152,7 @@ async def ingest_event(
 async def heartbeat(
     body: HeartbeatIn,
     db: Session = Depends(get_db),
-    _=Depends(require_role()),
+    _=Depends(require_role("device", "responder")),
 ):
     device = _upsert_device(db, body.device_id, body.gps, body.device)
     db.add(DeviceHeartbeat(

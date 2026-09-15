@@ -26,7 +26,7 @@ def list_incidents(
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=50, ge=1, le=500),
     db: Session = Depends(get_db),
-    _=Depends(require_role()),
+    _=Depends(require_role("responder")),
 ):
     q = select(Incident)
     if status:
@@ -52,7 +52,7 @@ def list_incidents(
 
 
 @router.get("/incidents/active", response_model=list[IncidentOut])
-def active_incidents(db: Session = Depends(get_db), _=Depends(require_role())):
+def active_incidents(db: Session = Depends(get_db), _=Depends(require_role("responder"))):
     """Responder triage queue (§5.4): unresolved, severity first, then recency."""
     rows = db.execute(
         select(Incident)
@@ -64,7 +64,7 @@ def active_incidents(db: Session = Depends(get_db), _=Depends(require_role())):
 
 
 @router.get("/incidents/{incident_id}", response_model=IncidentDetailOut)
-def get_incident(incident_id: str, db: Session = Depends(get_db), _=Depends(require_role())):
+def get_incident(incident_id: str, db: Session = Depends(get_db), _=Depends(require_role("responder"))):
     row = db.execute(
         select(Incident).options(joinedload(Incident.dispatch_events))
         .where(Incident.id == incident_id)
@@ -75,7 +75,7 @@ def get_incident(incident_id: str, db: Session = Depends(get_db), _=Depends(requ
 
 
 @router.get("/incidents/{incident_id}/window", response_model=WindowOut)
-def get_incident_window(incident_id: str, db: Session = Depends(get_db), _=Depends(require_role())):
+def get_incident_window(incident_id: str, db: Session = Depends(get_db), _=Depends(require_role("responder"))):
     w = db.get(IncidentWindow, incident_id)
     if w is None:
         raise HTTPException(status_code=404, detail="Window not found")

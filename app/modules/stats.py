@@ -17,7 +17,7 @@ SEVERITY_NAMES = {0: "Normal", 1: "Moderate", 2: "Severe"}
 
 
 @router.get("/stats/summary", response_model=StatsSummary)
-def stats_summary(db: Session = Depends(get_db), _=Depends(require_role())):
+def stats_summary(db: Session = Depends(get_db), _=Depends(require_role("responder"))):
     base = select(Incident).where(Incident.label_source != "manual_panic")
     rows = db.execute(base).scalars().all()
 

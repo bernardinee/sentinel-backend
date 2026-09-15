@@ -9,7 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.auth import require_role
+from app.auth import Principal, ensure_device_access, ensure_device_identifier, require_role
 from app.db import get_db
 from app.models import (Device, EmergencyContact, Incident, as_aware, utcnow)
 from app.modules.devices import OFFLINE_AFTER_S, _get_device
@@ -24,7 +24,8 @@ router = APIRouter(tags=["sentinel"])
 
 @router.get("/me/protection-status", response_model=ProtectionStatus)
 def protection_status(device_id: str, db: Session = Depends(get_db),
-                      _=Depends(require_role())):
+                      principal: Principal = Depends(require_role("driver", "responder"))):
+    ensure_device_identifier(principal, device_id)
     device = db.execute(
         select(Device).where(Device.device_id == device_id)).scalar_one_or_none()
     if device is None:
@@ -55,7 +56,8 @@ def protection_status(device_id: str, db: Session = Depends(get_db),
 
 @router.post("/panic", response_model=IncidentOut, status_code=201)
 async def panic(body: PanicIn, db: Session = Depends(get_db),
-                _=Depends(require_role())):
+                principal: Principal = Depends(require_role("driver", "responder"))):
+    ensure_device_identifier(principal, body.device_id)
     device = db.execute(
         select(Device).where(Device.device_id == body.device_id)).scalar_one_or_none()
     if device is None:
@@ -87,8 +89,9 @@ async def panic(body: PanicIn, db: Session = Depends(get_db),
 
 @router.get("/me/incidents", response_model=list[IncidentOut])
 def my_incidents(device_id: str, db: Session = Depends(get_db),
-                 _=Depends(require_role())):
+                 principal: Principal = Depends(require_role("driver", "responder"))):
     device = _get_device(db, device_id)
+    ensure_device_access(principal, device)
     rows = db.execute(
         select(Incident).where(Incident.device_id == device.id)
         .order_by(Incident.received_at.desc()).limit(200)
@@ -100,8 +103,9 @@ def my_incidents(device_id: str, db: Session = Depends(get_db),
 
 @router.get("/devices/{device_id}/contacts", response_model=list[ContactOut])
 def list_contacts(device_id: str, db: Session = Depends(get_db),
-                  _=Depends(require_role())):
+                  principal: Principal = Depends(require_role("driver", "responder"))):
     device = _get_device(db, device_id)
+    ensure_device_access(principal, device)
     rows = db.execute(
         select(EmergencyContact).where(EmergencyContact.device_id == device.id)
         .order_by(EmergencyContact.priority)
@@ -111,8 +115,9 @@ def list_contacts(device_id: str, db: Session = Depends(get_db),
 
 @router.post("/devices/{device_id}/contacts", response_model=ContactOut, status_code=201)
 def add_contact(device_id: str, body: ContactIn, db: Session = Depends(get_db),
-                _=Depends(require_role())):
+                principal: Principal = Depends(require_role("driver", "responder"))):
     device = _get_device(db, device_id)
+    ensure_device_access(principal, device)
     contact = EmergencyContact(
         device_id=device.id, name=body.name, phone=body.phone,
         relationship_=body.relationship, priority=body.priority, active=body.active)
@@ -123,8 +128,10 @@ def add_contact(device_id: str, body: ContactIn, db: Session = Depends(get_db),
 
 @router.patch("/devices/{device_id}/contacts/{contact_id}", response_model=ContactOut)
 def update_contact(device_id: str, contact_id: str, body: ContactPatch,
-                   db: Session = Depends(get_db), _=Depends(require_role())):
+                   db: Session = Depends(get_db),
+                   principal: Principal = Depends(require_role("driver", "responder"))):
     device = _get_device(db, device_id)
+    ensure_device_access(principal, device)
     contact = db.get(EmergencyContact, contact_id)
     if contact is None or contact.device_id != device.id:
         raise HTTPException(status_code=404, detail="Contact not found")
@@ -144,8 +151,10 @@ def update_contact(device_id: str, contact_id: str, body: ContactPatch,
 
 @router.delete("/devices/{device_id}/contacts/{contact_id}", status_code=204)
 def delete_contact(device_id: str, contact_id: str,
-                   db: Session = Depends(get_db), _=Depends(require_role())):
+                   db: Session = Depends(get_db),
+                   principal: Principal = Depends(require_role("driver", "responder"))):
     device = _get_device(db, device_id)
+    ensure_device_access(principal, device)
     contact = db.get(EmergencyContact, contact_id)
     if contact is None or contact.device_id != device.id:
         raise HTTPException(status_code=404, detail="Contact not found")

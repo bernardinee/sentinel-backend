@@ -26,6 +26,12 @@ services:
       ML_TIMEOUT_S: ${ML_TIMEOUT_S:-10}
       INFERENCE_MODE: ${INFERENCE_MODE:-local}
       API_KEY: ${API_KEY:-change-me-sentinel-dev-key}
+      ROLE_KEYS: ${ROLE_KEYS:-}
+      JWT_SECRET: ${JWT_SECRET:-}
+      JWT_ISSUER: ${JWT_ISSUER:-sentinel-backend}
+      JWT_AUDIENCE: ${JWT_AUDIENCE:-sentinel-mobile}
+      ACCESS_TOKEN_MINUTES: ${ACCESS_TOKEN_MINUTES:-15}
+      REFRESH_TOKEN_DAYS: ${REFRESH_TOKEN_DAYS:-30}
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:5173}
     ports:
       - "8080:8080"

@@ -5,7 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.auth import require_role
+from app.auth import Principal, ensure_device_access, require_role
 from app.db import get_db
 from app.models import Device, DeviceHeartbeat, as_aware, utcnow
 from app.schemas import DeviceOut, HeartbeatOut
@@ -32,14 +32,20 @@ def _get_device(db: Session, device_id: str) -> Device:
 
 
 @router.get("/devices", response_model=list[DeviceOut])
-def list_devices(db: Session = Depends(get_db), _=Depends(require_role())):
+def list_devices(db: Session = Depends(get_db), _=Depends(require_role("responder"))):
     rows = db.execute(select(Device).order_by(Device.device_id)).scalars().all()
     return [_with_liveness(d) for d in rows]
 
 
 @router.get("/devices/{device_id}", response_model=DeviceOut)
-def get_device(device_id: str, db: Session = Depends(get_db), _=Depends(require_role())):
-    return _with_liveness(_get_device(db, device_id))
+def get_device(
+    device_id: str,
+    db: Session = Depends(get_db),
+    principal: Principal = Depends(require_role("driver", "responder")),
+):
+    device = _get_device(db, device_id)
+    ensure_device_access(principal, device)
+    return _with_liveness(device)
 
 
 @router.get("/devices/{device_id}/heartbeats", response_model=list[HeartbeatOut])
@@ -47,9 +53,10 @@ def device_heartbeats(
     device_id: str,
     hours: int = Query(default=24, ge=1, le=24 * 7),
     db: Session = Depends(get_db),
-    _=Depends(require_role()),
+    principal: Principal = Depends(require_role("driver", "responder")),
 ):
     device = _get_device(db, device_id)
+    ensure_device_access(principal, device)
     since = utcnow() - timedelta(hours=hours)
     rows = db.execute(
         select(DeviceHeartbeat)

@@ -1,34 +1,112 @@
-"""Shared-secret API-key auth with a role stub (§5.4 'write the seam, not the door').
+"""Authentication and authorization shared by HTTP and WebSocket routes.
 
-Every route depends on `require_role(...)`, which yields a Principal. Swapping in
-real JWT auth later means replacing `resolve_principal` only — no route changes.
+Responder/device integrations can continue to use scoped API keys. Driver
+accounts use short-lived signed access tokens plus rotating refresh tokens.
 """
+import secrets
 from dataclasses import dataclass
+from datetime import timedelta
 
+import jwt
 from fastapi import Depends, HTTPException, Security
-from fastapi.security import APIKeyHeader
+from fastapi.security import APIKeyHeader, HTTPAuthorizationCredentials, HTTPBearer
+from jwt import InvalidTokenError
+from sqlalchemy.orm import Session
 
 from app.config import get_settings
+from app.db import get_db
+from app.models import Device, User, utcnow
 
 api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
+bearer_header = HTTPBearer(auto_error=False)
 
 
 @dataclass(frozen=True)
 class Principal:
     role: str  # driver | responder | device
+    subject: str
+    user_id: str | None = None
+    device_db_id: str | None = None
+    device_id: str | None = None
 
 
-def resolve_principal(api_key: str | None = Security(api_key_header)) -> Principal:
-    if not api_key:
-        raise HTTPException(status_code=401, detail="Missing X-API-Key header")
-    role = get_settings().role_key_map().get(api_key)
-    if role is None:
-        raise HTTPException(status_code=401, detail="Invalid API key")
-    return Principal(role=role)
+def create_access_token(user: User, device: Device) -> tuple[str, int]:
+    settings = get_settings()
+    now = utcnow()
+    expires_in = settings.ACCESS_TOKEN_MINUTES * 60
+    token = jwt.encode(
+        {
+            "sub": user.id,
+            "role": user.role,
+            "did": device.id,
+            "device_id": device.device_id,
+            "type": "access",
+            "iat": now,
+            "exp": now + timedelta(seconds=expires_in),
+            "iss": settings.JWT_ISSUER,
+            "aud": settings.JWT_AUDIENCE,
+        },
+        settings.jwt_signing_key(),
+        algorithm="HS256",
+    )
+    return token, expires_in
+
+
+def principal_from_access_token(token: str, db: Session) -> Principal:
+    settings = get_settings()
+    try:
+        payload = jwt.decode(
+            token,
+            settings.jwt_signing_key(),
+            algorithms=["HS256"],
+            audience=settings.JWT_AUDIENCE,
+            issuer=settings.JWT_ISSUER,
+            options={"require": ["sub", "exp", "iat", "type"]},
+        )
+    except InvalidTokenError as exc:
+        raise HTTPException(status_code=401, detail="Invalid or expired access token") from exc
+    if payload.get("type") != "access":
+        raise HTTPException(status_code=401, detail="Invalid access token")
+    user = db.get(User, str(payload["sub"]))
+    if user is None or not user.active:
+        raise HTTPException(status_code=401, detail="Account is unavailable")
+    device = db.get(Device, user.device_id)
+    if device is None:
+        raise HTTPException(status_code=401, detail="Account device is unavailable")
+    if payload.get("did") != device.id or payload.get("role") != user.role:
+        raise HTTPException(status_code=401, detail="Stale access token")
+    return Principal(
+        role=user.role,
+        subject=user.email,
+        user_id=user.id,
+        device_db_id=device.id,
+        device_id=device.device_id,
+    )
+
+
+def principal_from_api_key(api_key: str) -> Principal:
+    for candidate, role in get_settings().role_key_map().items():
+        if secrets.compare_digest(api_key, candidate):
+            return Principal(role=role, subject=f"api-key:{role}")
+    raise HTTPException(status_code=401, detail="Invalid API key")
+
+
+def resolve_principal(
+    credentials: HTTPAuthorizationCredentials | None = Security(bearer_header),
+    api_key: str | None = Security(api_key_header),
+    db: Session = Depends(get_db),
+) -> Principal:
+    if credentials is not None:
+        if credentials.scheme.lower() != "bearer":
+            raise HTTPException(status_code=401, detail="Unsupported authorization scheme")
+        return principal_from_access_token(credentials.credentials, db)
+    if api_key:
+        return principal_from_api_key(api_key)
+    raise HTTPException(status_code=401, detail="Authentication required")
 
 
 def require_role(*roles: str):
-    """Dependency factory. `require_role()` (no args) accepts any valid key."""
+    """Dependency factory. `require_role()` (no args) accepts any principal."""
 
     def checker(principal: Principal = Depends(resolve_principal)) -> Principal:
         if roles and principal.role not in roles:
@@ -36,3 +114,21 @@ def require_role(*roles: str):
         return principal
 
     return checker
+
+
+def ensure_device_access(principal: Principal, device: Device) -> None:
+    if principal.role == "responder":
+        return
+    if principal.role == "driver" and principal.device_db_id == device.id:
+        return
+    if principal.role == "device" and principal.device_id == device.device_id:
+        return
+    raise HTTPException(status_code=403, detail="This account cannot access that device")
+
+
+def ensure_device_identifier(principal: Principal, device_id: str) -> None:
+    if principal.role == "responder":
+        return
+    if principal.device_id == device_id:
+        return
+    raise HTTPException(status_code=403, detail="This account cannot access that device")
