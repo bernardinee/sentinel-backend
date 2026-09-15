@@ -70,8 +70,6 @@ def register(body: RegisterIn, db: Session = Depends(get_db)):
         device = Device(device_id=body.device_id, status="unknown")
         db.add(device)
         db.flush()
-    if db.scalar(select(User.id).where(User.device_id == device.id)) is not None:
-        raise HTTPException(status_code=409, detail="That Sentinel device is already linked")
 
     user = User(
         name=body.name.strip(),
@@ -86,7 +84,7 @@ def register(body: RegisterIn, db: Session = Depends(get_db)):
         db.flush()
     except IntegrityError as exc:
         db.rollback()
-        raise HTTPException(status_code=409, detail="Account or device already exists") from exc
+        raise HTTPException(status_code=409, detail="That account already exists") from exc
     return _token_out(db, user, device)
 
 

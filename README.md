@@ -65,7 +65,8 @@ stored as Argon2 hashes. Access tokens expire after 15 minutes; opaque refresh
 tokens last 30 days, rotate on every use, and are stored hashed in PostgreSQL.
 Reusing a rotated token revokes the user's remaining sessions.
 
-Each driver account is linked to one Sentinel device. Driver REST calls and
+Each driver account is linked to one Sentinel device; shared vehicles and the
+demo ESP32 may be linked to more than one driver account. Driver REST calls and
 WebSocket events are restricted to that device, while the responder dashboard
 continues to use a responder API key. Set a long, random `JWT_SECRET` in every
 non-local deployment.

@@ -323,7 +323,7 @@ The mobile app consumes these endpoints with a driver Bearer token.
 
 | Endpoint | Purpose |
 |---|---|
-| `POST /api/v1/auth/register` | Create a driver linked to one `device_id`; returns an access/refresh token pair |
+| `POST /api/v1/auth/register` | Create a driver linked to one `device_id` (shared devices are allowed); returns an access/refresh token pair |
 | `POST /api/v1/auth/login` | Verify email/password and create a new token pair |
 | `POST /api/v1/auth/refresh` | Rotate the opaque refresh token and issue a new access token |
 | `POST /api/v1/auth/logout` | Revoke the supplied refresh token; returns 204 |

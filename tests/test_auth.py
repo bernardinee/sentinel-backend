@@ -51,18 +51,46 @@ def test_register_login_and_owned_device_access(client):
     assert logged_in.status_code == 200
 
 
-def test_duplicate_accounts_and_cross_device_access_are_blocked(client):
+def test_duplicate_emails_are_blocked_but_a_device_can_be_shared(client):
     first = _register(client)
     assert _register(client).status_code == 409
-    assert _register(
+
+    shared = _register(
         client, email="someone@example.com", device_id="ESP32_AUTH_001"
-    ).status_code == 409
+    )
+    assert shared.status_code == 201
+    assert shared.json()["user"]["device_id"] == "ESP32_AUTH_001"
 
     auth = _bearer(first.json()["access_token"])
     assert client.get("/api/v1/incidents", headers=auth).status_code == 403
     assert client.get(
         "/api/v1/me/protection-status?device_id=SOMEONE_ELSE", headers=auth
     ).status_code == 403
+
+
+def test_driver_can_create_and_read_contacts_with_a_bearer_token(client):
+    session = _register(client).json()
+    auth = _bearer(session["access_token"])
+
+    created = client.post(
+        "/api/v1/devices/ESP32_AUTH_001/contacts",
+        headers=auth,
+        json={
+            "name": "Kojo Mensah",
+            "phone": "+233240000099",
+            "relationship": "Roommate",
+            "priority": 1,
+            "active": True,
+        },
+    )
+    assert created.status_code == 201, created.text
+    assert created.json()["relationship"] == "Roommate"
+
+    listed = client.get(
+        "/api/v1/devices/ESP32_AUTH_001/contacts", headers=auth
+    )
+    assert listed.status_code == 200
+    assert [contact["name"] for contact in listed.json()] == ["Kojo Mensah"]
 
 
 def test_refresh_tokens_rotate_detect_reuse_and_logout(client):

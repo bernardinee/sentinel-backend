@@ -55,11 +55,11 @@ class User(Base):
     phone: Mapped[str] = mapped_column(String(32))
     password_hash: Mapped[str] = mapped_column(String(512))
     role: Mapped[str] = mapped_column(String(16), default="driver")
-    # Drivers own exactly one device; responders own none, so this is nullable.
-    # Still unique, which keeps "one driver per device" enforced — SQL treats
-    # multiple NULLs as distinct, so any number of responders coexist.
+    # Drivers are linked to one device; responders own none, so this is
+    # nullable. A device may be shared by multiple drivers (for example a
+    # family vehicle or the single demo ESP32 used by web test accounts).
     device_id: Mapped[str | None] = mapped_column(
-        ForeignKey("devices.id"), unique=True, index=True, nullable=True)
+        ForeignKey("devices.id"), index=True, nullable=True)
     active: Mapped[bool] = mapped_column(Boolean, default=True)
     # Access tokens are stateless and live ~15 minutes, so revoking refresh
     # tokens alone would leave a stolen session usable after a password change.
