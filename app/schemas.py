@@ -122,6 +122,52 @@ class RegisterIn(BaseModel):
         return value
 
 
+class ResponderCreateIn(BaseModel):
+    """Create a colleague's dispatch-console account.
+
+    Restricted to signed-in responders — a dispatch team adds its own
+    operators. Still not reachable from /auth/register, which mints drivers
+    only, so an anonymous caller can never obtain responder rights.
+    """
+    name: str = Field(min_length=2, max_length=128)
+    email: str = Field(min_length=3, max_length=320)
+    phone: str = Field(default="", max_length=32)
+    password: str = Field(min_length=12, max_length=128)
+
+    @field_validator("email")
+    @classmethod
+    def valid_email(cls, value: str) -> str:
+        email = value.strip().lower()
+        if email.count("@") != 1 or "." not in email.rsplit("@", 1)[1]:
+            raise ValueError("Enter a valid email address")
+        return email
+
+    @field_validator("name")
+    @classmethod
+    def strip_name(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("Name cannot be blank")
+        return value
+
+
+class ResponderOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: str
+    name: str
+    email: str
+    phone: str
+    role: str
+    active: bool
+    created_at: datetime
+
+
+class ResponderPatch(BaseModel):
+    active: bool | None = None
+    name: str | None = Field(default=None, max_length=128)
+    password: str | None = Field(default=None, min_length=12, max_length=128)
+
+
 class LoginIn(BaseModel):
     email: str = Field(min_length=3, max_length=320)
     password: str = Field(min_length=1, max_length=128)

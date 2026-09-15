@@ -129,3 +129,77 @@ def test_bad_password_is_rejected(client):
     r = client.post("/api/v1/auth/login",
                     json={"email": "ops@sentinel.gh", "password": "wrong-password"})
     assert r.status_code == 401
+
+
+# ── Team management ──────────────────────────────────────────────────────────
+
+def test_responder_can_add_a_colleague(client):
+    _make_responder()
+    token = _login(client)["access_token"]
+    auth = {"Authorization": f"Bearer {token}"}
+
+    r = client.post("/api/v1/auth/responders", headers=auth, json={
+        "name": "Partner", "email": "Partner@Example.GH",
+        "phone": "+233200000000", "password": "partner-secret-123",
+    })
+    assert r.status_code == 201
+    assert r.json()["email"] == "partner@example.gh", "email is normalised"
+    assert r.json()["role"] == "responder"
+
+    # the colleague can now sign in and use the console
+    login = client.post("/api/v1/auth/login", json={
+        "email": "partner@example.gh", "password": "partner-secret-123"})
+    assert login.status_code == 200
+    partner_auth = {"Authorization": f"Bearer {login.json()['access_token']}"}
+    assert client.get("/api/v1/units", headers=partner_auth).status_code == 200
+
+    listing = client.get("/api/v1/auth/responders", headers=auth).json()
+    assert {u["email"] for u in listing} == {"ops@sentinel.gh", "partner@example.gh"}
+
+
+def test_adding_a_responder_requires_being_one(client):
+    """The privilege boundary holds: a driver cannot create responders."""
+    r = client.post("/api/v1/auth/register", json={
+        "name": "Driver", "email": "driver@example.com", "phone": "+233000",
+        "password": "hunter2hunter2", "device_id": "ESP32_D1"})
+    driver_auth = {"Authorization": f"Bearer {r.json()['access_token']}"}
+
+    denied = client.post("/api/v1/auth/responders", headers=driver_auth, json={
+        "name": "Sneaky", "email": "sneaky@example.com", "password": "sneaky-secret-1"})
+    assert denied.status_code == 403
+
+    anon = client.post("/api/v1/auth/responders", json={
+        "name": "Sneaky", "email": "s2@example.com", "password": "sneaky-secret-1"})
+    assert anon.status_code == 401
+
+
+def test_duplicate_email_rejected(client):
+    _make_responder()
+    auth = {"Authorization": f"Bearer {_login(client)['access_token']}"}
+    dup = client.post("/api/v1/auth/responders", headers=auth, json={
+        "name": "Clone", "email": "ops@sentinel.gh", "password": "another-secret-1"})
+    assert dup.status_code == 409
+
+
+def test_cannot_lock_the_team_out(client):
+    """Deactivation must never leave the console unreachable."""
+    _make_responder()
+    auth = {"Authorization": f"Bearer {_login(client)['access_token']}"}
+    me = client.get("/api/v1/auth/me", headers=auth).json()
+
+    # self-deactivation is refused
+    r = client.patch(f"/api/v1/auth/responders/{me['id']}", headers=auth,
+                     json={"active": False})
+    assert r.status_code == 409
+
+    # and so is deactivating the last other responder
+    created = client.post("/api/v1/auth/responders", headers=auth, json={
+        "name": "Partner", "email": "p@example.gh", "password": "partner-secret-123"}).json()
+    ok = client.patch(f"/api/v1/auth/responders/{created['id']}", headers=auth,
+                      json={"active": False})
+    assert ok.status_code == 200, "fine while another active responder remains"
+    assert ok.json()["active"] is False
+
+    # the deactivated colleague is locked out immediately
+    assert client.post("/api/v1/auth/login", json={
+        "email": "p@example.gh", "password": "partner-secret-123"}).status_code == 401
