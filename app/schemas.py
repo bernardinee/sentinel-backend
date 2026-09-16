@@ -274,6 +274,14 @@ class IncidentDetailOut(IncidentOut):
     dispatch_events: list[DispatchEventOut] = []
 
 
+class DriverIncidentOut(IncidentOut):
+    """The response milestones a driver may see without dispatcher-only data."""
+    assigned_at: datetime | None = None
+    en_route_at: datetime | None = None
+    arrived_at: datetime | None = None
+    responding_units: list[str] = []
+
+
 class IncidentPage(BaseModel):
     items: list[IncidentOut]
     total: int

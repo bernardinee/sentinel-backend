@@ -11,11 +11,12 @@ from sqlalchemy.orm import Session
 
 from app.auth import Principal, ensure_device_access, ensure_device_identifier, require_role
 from app.db import get_db
-from app.models import (Device, EmergencyContact, Incident, as_aware, utcnow)
+from app.models import (Device, DispatchEvent, EmergencyContact, Incident,
+                        ResponseUnit, as_aware, utcnow)
 from app.modules.devices import OFFLINE_AFTER_S, _get_device
 from app.modules.ws import manager
-from app.schemas import (ContactIn, ContactOut, ContactPatch, IncidentOut,
-                         PanicIn, ProtectionStatus)
+from app.schemas import (ContactIn, ContactOut, ContactPatch, DriverIncidentOut,
+                         IncidentOut, PanicIn, ProtectionStatus)
 
 router = APIRouter(tags=["sentinel"])
 
@@ -87,7 +88,7 @@ async def panic(body: PanicIn, db: Session = Depends(get_db),
 
 # ── Driver: own incident history ─────────────────────────────────────────────
 
-@router.get("/me/incidents", response_model=list[IncidentOut])
+@router.get("/me/incidents", response_model=list[DriverIncidentOut])
 def my_incidents(device_id: str, db: Session = Depends(get_db),
                  principal: Principal = Depends(require_role("driver", "responder"))):
     device = _get_device(db, device_id)
@@ -96,7 +97,38 @@ def my_incidents(device_id: str, db: Session = Depends(get_db),
         select(Incident).where(Incident.device_id == device.id)
         .order_by(Incident.received_at.desc()).limit(200)
     ).scalars().all()
-    return [IncidentOut.model_validate(r) for r in rows]
+    if not rows:
+        return []
+
+    incident_ids = [row.id for row in rows]
+    events = db.execute(
+        select(DispatchEvent)
+        .where(DispatchEvent.incident_id.in_(incident_ids))
+        .order_by(DispatchEvent.at, DispatchEvent.id)
+    ).scalars().all()
+    units = db.execute(
+        select(ResponseUnit)
+        .where(ResponseUnit.assigned_incident_id.in_(incident_ids))
+        .order_by(ResponseUnit.call_sign)
+    ).scalars().all()
+    milestones: dict[str, dict[str, object]] = {id_: {} for id_ in incident_ids}
+    responding: dict[str, list[str]] = {id_: [] for id_ in incident_ids}
+    for event in events:
+        field = {
+            "assign": "assigned_at",
+            "en_route": "en_route_at",
+            "on_scene": "arrived_at",
+        }.get(event.action)
+        if field is not None:
+            milestones[event.incident_id].setdefault(field, event.at)
+    for unit in units:
+        responding[unit.assigned_incident_id].append(unit.call_sign)
+
+    return [DriverIncidentOut(
+        **IncidentOut.model_validate(row).model_dump(),
+        **milestones[row.id],
+        responding_units=responding[row.id],
+    ) for row in rows]
 
 
 # ── Emergency contact CRUD (shared with dashboard Screen 4) ──────────────────
@@ -114,8 +146,8 @@ def list_contacts(device_id: str, db: Session = Depends(get_db),
 
 
 @router.post("/devices/{device_id}/contacts", response_model=ContactOut, status_code=201)
-def add_contact(device_id: str, body: ContactIn, db: Session = Depends(get_db),
-                principal: Principal = Depends(require_role("driver", "responder"))):
+async def add_contact(device_id: str, body: ContactIn, db: Session = Depends(get_db),
+                      principal: Principal = Depends(require_role("driver", "responder"))):
     device = _get_device(db, device_id)
     ensure_device_access(principal, device)
     contact = EmergencyContact(
@@ -123,13 +155,14 @@ def add_contact(device_id: str, body: ContactIn, db: Session = Depends(get_db),
         relationship_=body.relationship, priority=body.priority, active=body.active)
     db.add(contact)
     db.commit()
+    await manager.broadcast("contact.updated", {"device_id": device.id})
     return ContactOut.model_validate(contact)
 
 
 @router.patch("/devices/{device_id}/contacts/{contact_id}", response_model=ContactOut)
-def update_contact(device_id: str, contact_id: str, body: ContactPatch,
-                   db: Session = Depends(get_db),
-                   principal: Principal = Depends(require_role("driver", "responder"))):
+async def update_contact(device_id: str, contact_id: str, body: ContactPatch,
+                         db: Session = Depends(get_db),
+                         principal: Principal = Depends(require_role("driver", "responder"))):
     device = _get_device(db, device_id)
     ensure_device_access(principal, device)
     contact = db.get(EmergencyContact, contact_id)
@@ -146,13 +179,14 @@ def update_contact(device_id: str, contact_id: str, body: ContactPatch,
     if body.active is not None:
         contact.active = body.active
     db.commit()
+    await manager.broadcast("contact.updated", {"device_id": device.id})
     return ContactOut.model_validate(contact)
 
 
 @router.delete("/devices/{device_id}/contacts/{contact_id}", status_code=204)
-def delete_contact(device_id: str, contact_id: str,
-                   db: Session = Depends(get_db),
-                   principal: Principal = Depends(require_role("driver", "responder"))):
+async def delete_contact(device_id: str, contact_id: str,
+                         db: Session = Depends(get_db),
+                         principal: Principal = Depends(require_role("driver", "responder"))):
     device = _get_device(db, device_id)
     ensure_device_access(principal, device)
     contact = db.get(EmergencyContact, contact_id)
@@ -160,3 +194,4 @@ def delete_contact(device_id: str, contact_id: str,
         raise HTTPException(status_code=404, detail="Contact not found")
     db.delete(contact)
     db.commit()
+    await manager.broadcast("contact.updated", {"device_id": device.id})

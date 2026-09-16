@@ -67,9 +67,11 @@ Reusing a rotated token revokes the user's remaining sessions.
 
 Each driver account is linked to one Sentinel device; shared vehicles and the
 demo ESP32 may be linked to more than one driver account. Driver REST calls and
-WebSocket events are restricted to that device, while the responder dashboard
-continues to use a responder API key. Set a long, random `JWT_SECRET` in every
-non-local deployment.
+WebSocket events are restricted to that device. The responder dashboard uses
+responder account Bearer tokens; scoped API keys remain available for device
+and service integrations. Set a long, random `JWT_SECRET` in every non-local
+deployment. Because incidents and contacts are device-scoped, accounts linked
+to the same device share those records.
 
 ## Inference modes
 

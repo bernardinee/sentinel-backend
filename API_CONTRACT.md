@@ -335,7 +335,7 @@ The mobile app consumes these endpoints with a driver Bearer token.
 |---|---|
 | `GET /api/v1/me/protection-status?device_id=` | Drives the app's green/amber/red status ring |
 | `POST /api/v1/panic` | `{device_id, lat?, lon?, note?}` → creates a `severity_class: 2`, `label_source: "manual_panic"`, `accident_confirmed: true` incident. **Bypasses the model by design** and is excluded from statistics. Returns 201 + `IncidentOut`. |
-| `GET /api/v1/me/incidents?device_id=` | Own history, newest first, capped at 200 |
+| `GET /api/v1/me/incidents?device_id=` | Linked device history, newest first, capped at 200; each incident also includes `assigned_at`, `en_route_at`, `arrived_at`, and current `responding_units` call signs |
 | `GET\|POST\|PATCH\|DELETE /api/v1/devices/{device_id}/contacts[/{id}]` | Emergency contact CRUD |
 
 **`protection-status`**
@@ -369,16 +369,18 @@ Reuses §2 and §3, plus `GET /api/v1/incidents/active`.
 WS /ws/incidents?api_key=<key>
 ```
 
-The responder dashboard retains the API-key URL above. Driver clients connect to
-`/ws/incidents` with protocols `sentinel-v1` and `bearer.<access-token>`, which
-keeps the token out of the URL. Native clients may instead use an Authorization
-header. An invalid credential closes with code **4401**. Driver connections only
-receive incident and device events belonging to their linked device.
+The responder dashboard now connects with its short-lived Bearer token in the
+`access_token` query parameter; the older responder API-key URL remains supported
+for service integrations. Driver clients connect to `/ws/incidents` with
+protocols `sentinel-v1` and `bearer.<access-token>`, which keeps the token out of
+the URL. Native clients may instead use an Authorization header. An invalid
+credential closes with code **4401**. Driver connections only receive incident,
+device, and contact-change events belonging to their linked device.
 
 **Envelope**
 
 ```json
-{ "type": "incident.created" | "incident.updated" | "device_status" | "ping",
+{ "type": "incident.created" | "incident.updated" | "device_status" | "unit.updated" | "contact.updated" | "ping",
   "at": "2026-09-14T11:32:18.463Z",
   "data": { … } }
 ```
@@ -387,6 +389,12 @@ receive incident and device events belonging to their linked device.
 - `device_status` → `{device_id, status, last_seen_at, lat, lon, satellites, uptime_s, free_heap, rssi, battery_v}`.
 - `unit.updated` → `data` is a full `UnitOut`, emitted on assignment and on every status change.
 - `ping` → server keepalive every 20 s; the client replies `{"type":"pong"}`.
+
+`contact.updated` carries only `{device_id}` (the internal device UUID) after
+contact creation, update, or deletion. Clients refetch the device's contact list.
+The mobile app refetches its driver incident projection after each incident
+WebSocket event to populate responder milestones that are absent from the shared
+dispatcher `IncidentOut` frame.
 
 **Client obligations**
 
