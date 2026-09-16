@@ -425,3 +425,32 @@ If the ML API is unreachable at ingest:
 inference code** in-process — identical 20 Hz Butterworth low-pass, identical 25
 features, identical signature gate. It is a vendored copy rather than a
 reimplementation precisely to avoid train/serve skew.
+
+## SMS relay — `POST /api/v1/sms/send`
+
+Lets the device send emergency SMS over WiFi when its GSM modem is unavailable.
+Roles: `device`, `responder`.
+
+Request:
+```json
+{"phone": "+233241234567", "message": "Accident detected at 5.6581,-0.1812", "device_id": "ESP32_ACC_001"}
+```
+`phone` accepts `+233…`, `233…`, `00233…` or Ghana-local `0…`; it is normalised to `+233…`.
+`message` is 1–918 characters. `event_id` is optional and only logged.
+
+Response `200`:
+```json
+{"status": "sent", "provider": "arkesel", "phone": "+233241234567", "provider_message_id": "…", "segments": 1}
+```
+
+| Status | Meaning |
+|---|---|
+| 401 | missing / invalid key |
+| 403 | recipient is neither an active emergency contact of `device_id` nor in `SMS_ALLOWED_RECIPIENTS` |
+| 422 | invalid phone or message |
+| 429 | more than `SMS_RATE_LIMIT_PER_10MIN` messages from this key+device in 10 minutes |
+| 502 | provider rejected the message or was unreachable (detail carries the provider's reason) |
+| 503 | `SMS_PROVIDER` not configured |
+
+The recipient restriction exists because the device key lives in firmware flash:
+without it, anyone who reads the key could send SMS at the project's expense.

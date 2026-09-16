@@ -39,6 +39,18 @@ class Settings(BaseSettings):
     CORS_ORIGINS: str = "http://localhost:5173"
     DRIVER_APP_ORIGINS: str = "https://sentinel-app-gold.vercel.app"
     HEARTBEAT_RETENTION_DAYS: int = 7
+    # SMS relay (app/modules/sms.py): arkesel | twilio | console | "" (disabled)
+    SMS_PROVIDER: str = ""
+    SMS_SENDER_ID: str = "Sentinel"          # Arkesel sender ID, max 11 characters
+    SMS_ALLOWED_RECIPIENTS: str = ""         # comma-separated, in addition to device contacts
+    SMS_RATE_LIMIT_PER_10MIN: int = 20
+    ARKESEL_API_KEY: str = ""
+    TWILIO_ACCOUNT_SID: str = ""
+    TWILIO_AUTH_TOKEN: str = ""
+    TWILIO_FROM_NUMBER: str = ""
+
+    def sms_allowed_list(self) -> list[str]:
+        return [p.strip() for p in self.SMS_ALLOWED_RECIPIENTS.split(",") if p.strip()]
 
     def cors_origin_list(self) -> list[str]:
         values = [*self.CORS_ORIGINS.split(","),
