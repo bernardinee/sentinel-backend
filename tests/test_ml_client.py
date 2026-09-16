@@ -92,6 +92,26 @@ async def test_local_mode_brief_spike_overridden(settings):
     assert result["label_source"] in ("signature_override", "model")
 
 
+def test_scale_model_signature_profile(monkeypatch):
+    """The model-car rig produces shorter, sharper pulses than a real vehicle.
+    Its gate accepts a 3-sample (30 ms) pulse and peaks up to 10 g, but still
+    rejects a 2-sample tap and anything beyond the widened ceiling."""
+    import numpy as np
+    from app.modules.inference import phase2_vendored as P
+
+    def pulse(peak_g: float, samples: int):
+        az = np.ones(500)
+        az[250:250 + samples] = peak_g
+        return np.zeros(500), np.zeros(500), az
+
+    monkeypatch.setenv("SIGNATURE_PROFILE", "scale_model")
+    assert P.signature_thresholds()["profile"] == "scale_model"
+    assert P.crash_signature(*pulse(4.0, 3))[3] is True     # 30 ms: accepted
+    assert P.crash_signature(*pulse(4.0, 2))[3] is False    # 20 ms: too brief
+    assert P.crash_signature(*pulse(8.5, 5))[3] is True     # rigid small-car hit
+    assert P.crash_signature(*pulse(12.0, 5))[3] is False   # beyond the ceiling
+
+
 @pytest.mark.asyncio
 async def test_local_mode_normal_driving(settings):
     settings.INFERENCE_MODE = "local"

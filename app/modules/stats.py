@@ -1,5 +1,7 @@
 """Stats (§5.2). manual_panic incidents are excluded everywhere here — a human
-pressing a button must never contaminate model-performance statistics (§5.4)."""
+pressing a button must never contaminate model-performance statistics (§5.4).
+RC-car demo incidents (label_source "rc_demo_threshold", provisional thresholds,
+no model) are excluded the same way."""
 from datetime import timedelta
 
 from fastapi import APIRouter, Depends
@@ -14,11 +16,12 @@ from app.schemas import StatsSummary
 router = APIRouter(tags=["stats"])
 
 SEVERITY_NAMES = {0: "Normal", 1: "Moderate", 2: "Severe"}
+EXCLUDED_LABEL_SOURCES = ("manual_panic", "rc_demo_threshold")
 
 
 @router.get("/stats/summary", response_model=StatsSummary)
 def stats_summary(db: Session = Depends(get_db), _=Depends(require_role("responder"))):
-    base = select(Incident).where(Incident.label_source != "manual_panic")
+    base = select(Incident).where(Incident.label_source.notin_(EXCLUDED_LABEL_SOURCES))
     rows = db.execute(base).scalars().all()
 
     by_severity: dict[str, int] = {"Normal": 0, "Moderate": 0, "Severe": 0, "pending": 0}

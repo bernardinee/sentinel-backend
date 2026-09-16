@@ -25,10 +25,65 @@ ART = Path(__file__).resolve().parents[3] / "artifacts"
 TARGET_FS, WINDOW_SAMPLES = 100, 500
 CLASS_NAMES = ["Normal", "Moderate", "Severe"]
 
-# ── crash-signature physics thresholds (from Phase 2 / VZCrash) ──────────────
-PEAK_MIN_G, PEAK_MAX_G = 2.0, 7.0
-TRANSIENT_MIN_MS = float(os.environ.get("SIG_TRANSIENT_MIN_MS", "40"))
-TRANSIENT_MAX_MS = 250.0
+# ── crash-signature physics thresholds ───────────────────────────────────────
+# Full-scale values (Phase 2 / VZCrash): peak 2–7 g, excursion 40–250 ms.
+#
+# SCALE-MODEL PROFILE — hard-coded for the model-car test rig. A small car has
+# almost no crumple zone, so it stops over millimetres rather than ~0.5 m: its
+# pulse is shorter and sharper than a real vehicle's (duration ≈ 2·crush/speed).
+# Against the full-scale gate, 6 of 42 recorded rig crashes were rejected while
+# the model already rated them a crash (P(crash) 0.42–0.69), missing by one
+# 10 ms sample or peaking at 7.2–8.6 g. Only the physics gate is widened; the
+# model, its 0.396 alert threshold, and the rule that BOTH must agree are
+# untouched, so peak height still never decides severity on its own.
+# Revert to FULL_SCALE for real-vehicle data.
+#
+# RC_DEMO PROFILE — provisional, engineering-set thresholds for the RC-car
+# demonstration, chosen from how a 100 Hz MPU6050 and this 20 Hz filter render a
+# few-millisecond impact (a 1-sample raw spike keeps ~40% of its height). They
+# were NOT derived from measured RC crashes. The model is not consulted
+# (it was trained on full-size vehicles); the gate alone decides:
+#   crash   filtered peak >= 2.0 g for 10-250 ms  (ignores taps/put-downs below
+#           ~4.5 g raw, catches knocks of ~5 g raw and up)
+#   Severe  impulse above 2 g >= 0.10 g·s        (full-throttle, sensor-clipping hits)
+# Incidents get label_source "rc_demo_threshold" and are excluded from stats.
+#
+# Selected with env SIGNATURE_PROFILE = full_scale (default) | scale_model | rc_demo.
+# Anything unset or unrecognised is full_scale. rc_demo values can be tuned
+# without a code change via RC_DEMO_PEAK_MIN_G, RC_DEMO_PEAK_MAX_G,
+# RC_DEMO_DUR_MIN_MS, RC_DEMO_DUR_MAX_MS, RC_DEMO_SEVERE_IMPULSE_GS.
+FULL_SCALE = {"peak_min_g": 2.0, "peak_max_g": 7.0,
+              "transient_min_ms": 40.0, "transient_max_ms": 250.0}
+SCALE_MODEL = {"peak_min_g": 2.0, "peak_max_g": 10.0,
+               "transient_min_ms": 30.0, "transient_max_ms": 250.0}
+RC_DEMO = {"peak_min_g": 2.0, "peak_max_g": 16.0,
+           "transient_min_ms": 10.0, "transient_max_ms": 250.0,
+           "severe_impulse_gs": 0.10, "decision": "threshold_only"}
+PROFILES = {"full_scale": FULL_SCALE, "scale_model": SCALE_MODEL, "rc_demo": RC_DEMO}
+RC_DEMO_LABEL_SOURCE = "rc_demo_threshold"
+_RC_DEMO_ENV = {"peak_min_g": "RC_DEMO_PEAK_MIN_G", "peak_max_g": "RC_DEMO_PEAK_MAX_G",
+                "transient_min_ms": "RC_DEMO_DUR_MIN_MS", "transient_max_ms": "RC_DEMO_DUR_MAX_MS",
+                "severe_impulse_gs": "RC_DEMO_SEVERE_IMPULSE_GS"}
+
+
+def active_profile() -> tuple[str, dict]:
+    """(name, thresholds) from env SIGNATURE_PROFILE; unset/unknown -> full_scale."""
+    name = os.environ.get("SIGNATURE_PROFILE", "").strip().lower()
+    if name not in PROFILES:
+        name = "full_scale"
+    prof = dict(PROFILES[name])
+    if name == "rc_demo":
+        for key, env in _RC_DEMO_ENV.items():
+            if os.environ.get(env):
+                prof[key] = float(os.environ[env])
+    return name, prof
+
+
+SIGNATURE_PROFILE_NAME, SIGNATURE_PROFILE = active_profile()
+PEAK_MIN_G = SIGNATURE_PROFILE["peak_min_g"]
+PEAK_MAX_G = SIGNATURE_PROFILE["peak_max_g"]
+TRANSIENT_MIN_MS = SIGNATURE_PROFILE["transient_min_ms"]
+TRANSIENT_MAX_MS = SIGNATURE_PROFILE["transient_max_ms"]
 G = 9.80665
 BUTTER_CUTOFF_HZ = 20.0
 _SOS = signal.butter(4, BUTTER_CUTOFF_HZ / (TARGET_FS / 2.0), btype="low", output="sos")
@@ -51,6 +106,17 @@ def _load():
         except Exception:
             _crash_alert_threshold = 0.5
     return _model, _features, _crash_alert_threshold
+
+
+def signature_thresholds() -> dict:
+    """The active physics gate, published on /ml/health so the dashboard shows
+    the limits actually applied rather than a copy that can drift."""
+    name, prof = active_profile()
+    return {"profile": name, **prof}
+
+
+def is_threshold_only() -> bool:
+    return active_profile()[1].get("decision") == "threshold_only"
 
 
 def _lp(x):
@@ -96,19 +162,42 @@ def features_25(ax, ay, az, gx):
     }
 
 
-def crash_signature(ax, ay, az):
-    """Physics cross-check: peak_g, longest excursion >2g (ms), impulse (g·s)."""
+def crash_signature(ax, ay, az, profile: dict | None = None):
+    """Physics cross-check: peak_g, longest excursion above the floor (ms), impulse (g·s)."""
+    p = profile or active_profile()[1]
     mag = np.sqrt(ax ** 2 + ay ** 2 + az ** 2)
     peak = float(mag.max())
-    above = mag >= PEAK_MIN_G
+    above = mag >= p["peak_min_g"]
     longest = run = 0
     for a in above:
         run = run + 1 if a else 0
         longest = max(longest, run)
     longest_ms = longest * 1000.0 / TARGET_FS
     impulse = float(np.sum(mag[above] - 1.0) / TARGET_FS) if above.any() else 0.0
-    is_sig = (PEAK_MIN_G <= peak < PEAK_MAX_G and TRANSIENT_MIN_MS <= longest_ms <= TRANSIENT_MAX_MS)
+    is_sig = (p["peak_min_g"] <= peak < p["peak_max_g"]
+              and p["transient_min_ms"] <= longest_ms <= p["transient_max_ms"])
     return peak, longest_ms, impulse, bool(is_sig)
+
+
+def run_threshold_only(ax, ay, az, gx, gy, gz) -> dict:
+    """rc_demo decision: the gate alone, no model. Same response shape as run_inference."""
+    t0 = time.perf_counter()
+    name, prof = active_profile()
+    ax, ay, az, scale = normalize_to_g(
+        np.asarray(ax, float), np.asarray(ay, float), np.asarray(az, float))
+    ax, ay, az = _lp(ax), _lp(ay), _lp(az)
+    peak, longest_ms, impulse, is_sig = crash_signature(ax, ay, az, prof)
+    label = 0 if not is_sig else (2 if impulse >= prof["severe_impulse_gs"] else 1)
+    return {
+        "severity_class": label, "severity_name": CLASS_NAMES[label],
+        "confidence": None, "p_crash": None, "model_severity": None,
+        "accident_confirmed": bool(label >= 1), "probabilities": None,
+        "crash_signature": {"peak_g": round(peak, 3), "excursion_ms": round(longest_ms, 1),
+                            "impulse_gs": round(impulse, 3), "signature_match": is_sig},
+        "unit_scale_applied": scale, "label_source": RC_DEMO_LABEL_SOURCE,
+        "signature_profile": {"profile": name, **prof},
+        "inference_time_ms": round((time.perf_counter() - t0) * 1000, 2),
+    }
 
 
 def run_inference(ax, ay, az, gx, gy, gz) -> dict:

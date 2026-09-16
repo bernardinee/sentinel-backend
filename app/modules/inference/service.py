@@ -55,6 +55,12 @@ def _predict_local(window: dict) -> dict:
 
 async def classify(window: dict) -> dict:
     """window: dict with ax..gz lists of 500 floats. Returns ML API response shape."""
+    from app.modules.inference import phase2_vendored
+    if phase2_vendored.is_threshold_only():
+        # SIGNATURE_PROFILE=rc_demo: thresholds alone decide, in-process, no ML API
+        return await asyncio.to_thread(
+            phase2_vendored.run_threshold_only, window["ax"], window["ay"], window["az"],
+            window["gx"], window["gy"], window["gz"])
     mode = get_settings().INFERENCE_MODE.lower()
     if mode == "local":
         return await asyncio.to_thread(_predict_local, window)
@@ -71,7 +77,8 @@ async def ml_health() -> dict:
             return {"status": "healthy", "mode": "local",
                     "model": "phase2_xgboost_calibrated (local)",
                     "n_features": len(features), "crash_alert_threshold": thr,
-                    "taxonomy": "signature+impulse (v2)"}
+                    "taxonomy": "signature+impulse (v2)",
+                    "signature": phase2_vendored.signature_thresholds()}
         except Exception as exc:
             return {"status": "error", "mode": "local", "error": str(exc)}
     try:
@@ -79,6 +86,8 @@ async def ml_health() -> dict:
             resp = await client.get(settings.ML_API_URL.rstrip("/") + "/health")
         data = resp.json()
         data["mode"] = "remote"
+        from app.modules.inference import phase2_vendored
+        data["signature"] = phase2_vendored.signature_thresholds()
         return data
     except Exception as exc:
         return {"status": "unreachable", "mode": "remote", "error": str(exc)}
