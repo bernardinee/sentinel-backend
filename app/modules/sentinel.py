@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 
 from app.auth import Principal, ensure_device_access, ensure_device_identifier, require_role
 from app.db import get_db
+from app.geo import clean_fix
 from app.models import (Device, DispatchEvent, EmergencyContact, Incident,
                         ResponseUnit, as_aware, utcnow)
 from app.modules.devices import OFFLINE_AFTER_S, _get_device
@@ -65,6 +66,11 @@ async def panic(body: PanicIn, db: Session = Depends(get_db),
         device = Device(device_id=body.device_id, status="unknown")
         db.add(device)
         db.flush()
+    # The mobile app sends (0,0) when it fires a panic without a GPS lock;
+    # fall back to the device's last real fix rather than trusting null island.
+    _panic_lat, _panic_lon = clean_fix(body.lat, body.lon)
+    if _panic_lat is None:
+        _panic_lat, _panic_lon = clean_fix(device.last_lat, device.last_lon)
     incident = Incident(
         event_id=f"panic-{uuid.uuid4()}",
         device_id=device.id,
@@ -72,9 +78,9 @@ async def panic(body: PanicIn, db: Session = Depends(get_db),
         severity_class=2, severity_name="Severe",
         accident_confirmed=True, label_source="manual_panic",
         classification_pending=False,
-        lat=body.lat if body.lat is not None else device.last_lat,
-        lon=body.lon if body.lon is not None else device.last_lon,
-        gps_valid=body.lat is not None or device.last_lat is not None,
+        lat=_panic_lat,
+        lon=_panic_lon,
+        gps_valid=_panic_lat is not None,
         satellites=device.last_satellites,
         status="new",
         notes=body.note,

@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 
 from app.auth import require_role
 from app.db import get_db
+from app.geo import clean_fix, has_fix
 from app.models import Device, DeviceHeartbeat, Incident, IncidentWindow, utcnow
 from app.modules.inference.service import InferenceUnavailable, classify
 from app.modules.ws import manager
@@ -35,7 +36,7 @@ def _upsert_device(db: Session, device_id: str, gps, dev) -> Device:
             device.last_uptime_s = dev.uptime_s
         if dev.rssi is not None:
             device.last_rssi = dev.rssi
-    if gps is not None and gps.valid and gps.lat is not None and gps.lon is not None:
+    if gps is not None and gps.valid and has_fix(gps.lat, gps.lon):
         device.last_lat, device.last_lon = gps.lat, gps.lon
         device.last_satellites = gps.satellites
     db.flush()
@@ -110,6 +111,9 @@ async def ingest_event(
     device = _upsert_device(db, body.device_id, body.gps, body.device)
 
     # 4. Persist provisional incident + raw window BEFORE calling the ML API.
+    #    Drop a null-island (0,0) coordinate to None so the map is not dragged
+    #    into the ocean by an event sent without a real lock.
+    _lat, _lon = clean_fix(body.gps.lat, body.gps.lon)
     incident = Incident(
         event_id=body.event_id,
         device_id=device.id,
@@ -117,7 +121,7 @@ async def ingest_event(
         received_at=utcnow(),
         trigger_peak_g=body.trigger.peak_g,
         trigger_jerk_gs=body.trigger.jerk_gs,
-        lat=body.gps.lat, lon=body.gps.lon, gps_valid=body.gps.valid,
+        lat=_lat, lon=_lon, gps_valid=_lat is not None,
         satellites=body.gps.satellites, speed_kmh=body.gps.speed_kmh,
         status="new",
         classification_pending=True,
@@ -155,10 +159,11 @@ async def heartbeat(
     _=Depends(require_role("device", "responder")),
 ):
     device = _upsert_device(db, body.device_id, body.gps, body.device)
+    _hb_lat, _hb_lon = clean_fix(body.gps.lat, body.gps.lon) if body.gps.valid else (None, None)
     db.add(DeviceHeartbeat(
         device_id=device.id,
-        lat=body.gps.lat if body.gps.valid else None,
-        lon=body.gps.lon if body.gps.valid else None,
+        lat=_hb_lat,
+        lon=_hb_lon,
         satellites=body.gps.satellites,
         uptime_s=body.device.uptime_s,
         free_heap=body.device.free_heap,
