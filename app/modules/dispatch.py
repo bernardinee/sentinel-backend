@@ -4,11 +4,14 @@ incident columns alone."""
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
+from sqlalchemy import select
+
 from app.auth import require_role
 from app.db import get_db
-from app.models import DispatchEvent, Incident, utcnow
+from app.models import DispatchEvent, Incident, ResponseUnit, utcnow
+from app.modules.movement import clear_dispatch_run
 from app.modules.ws import manager
-from app.schemas import AcknowledgeIn, DispatchIn, IncidentOut, ResolveIn
+from app.schemas import AcknowledgeIn, DispatchIn, IncidentOut, ResolveIn, UnitOut
 
 router = APIRouter(tags=["dispatch"])
 
@@ -55,9 +58,24 @@ async def _apply(db: Session, incident: Incident, action: str, actor: str,
     if note:
         incident.notes = (incident.notes + "\n" if incident.notes else "") + note
     db.add(DispatchEvent(incident_id=incident.id, actor=actor, action=action, note=note))
+
+    # Closing the incident releases its responders back to their stations —
+    # whether it was resolved or judged a false alarm, and regardless of how far
+    # along their run they were. This is what makes "on scene -> available"
+    # happen automatically once the dispatcher closes the call.
+    freed: list[ResponseUnit] = []
+    if action in ("resolve", "false_alarm"):
+        freed = db.execute(
+            select(ResponseUnit).where(ResponseUnit.assigned_incident_id == incident.id)
+        ).scalars().all()
+        for unit in freed:
+            clear_dispatch_run(unit)
+
     db.commit()
     out = IncidentOut.model_validate(incident)
     await manager.broadcast("incident.updated", out.model_dump())
+    for unit in freed:
+        await manager.broadcast("unit.updated", UnitOut.model_validate(unit).model_dump())
     return out
 
 

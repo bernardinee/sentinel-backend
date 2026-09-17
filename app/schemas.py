@@ -422,6 +422,12 @@ class UnitOut(BaseModel):
     assigned_incident_id: str | None
     active: bool
     last_update: datetime
+    #: Dispatch-run state, present while the unit is responding. The dashboard
+    #: animates the unit along `route_geometry` from `dispatched_at`, using
+    #: `route_eta_s` as the trip duration; all three are null when idle.
+    dispatched_at: datetime | None = None
+    route_geometry: list[list[float]] | None = None
+    route_eta_s: float | None = None
 
 
 class RouteOut(BaseModel):

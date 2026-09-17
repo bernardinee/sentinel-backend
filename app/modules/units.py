@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 from app.auth import require_role
 from app.db import get_db
 from app.models import DispatchEvent, Incident, ResponseUnit, utcnow
+from app.modules.movement import MOBILIZE_S, clear_dispatch_run, sim_speed
 from app.modules.routing import haversine_km, road_route, route_many
 from app.modules.ws import manager
 from app.schemas import (AssignUnitIn, DispatchOption, DispatchOptions,
@@ -52,6 +53,16 @@ def _get_incident(db: Session, incident_id: str) -> Incident:
     if incident is None:
         raise HTTPException(status_code=404, detail="Incident not found")
     return incident
+
+
+# ── Dispatch simulation config (shared with the dashboard) ───────────────────
+
+@router.get("/dispatch/config")
+def dispatch_config(_=Depends(require_role("responder"))):
+    """Timing the dashboard needs so its on-map animation matches the server's
+    status progression exactly: seconds to mobilise, and the demo time-compression
+    factor (1.0 = real time)."""
+    return {"mobilize_s": MOBILIZE_S, "sim_speed": sim_speed()}
 
 
 # ── Roster CRUD (operator configuration) ─────────────────────────────────────
@@ -213,16 +224,23 @@ async def assign_unit(incident_id: str, body: AssignUnitIn,
         raise HTTPException(status_code=409, detail=f"{unit.call_sign} is out of service")
 
     eta_note = ""
+    unit.route_geometry = None
+    unit.route_eta_s = None
     if incident.lat is not None and incident.lon is not None:
+        # Geometry too: it is both the ETA source and the exact path the
+        # dashboard animates the unit along.
         r = await road_route(*unit.position(), incident.lat, incident.lon,
-                             with_geometry=False)
+                             with_geometry=True)
         eta_note = (f" ETA {r['duration_min']:.0f} min "
                     f"({r['distance_km']:.1f} km by road)"
                     if r["source"] == "osrm" else
                     f" ETA ~{r['duration_min']:.0f} min (estimated)")
+        unit.route_geometry = r["geometry"] or None
+        unit.route_eta_s = r["duration_min"] * 60.0
 
     unit.status = "dispatched"
     unit.assigned_incident_id = incident.id
+    unit.dispatched_at = utcnow()
     unit.last_update = utcnow()
 
     if incident.status == "new":
@@ -250,11 +268,13 @@ async def set_unit_status(call_sign: str, body: UnitStatusIn,
     unit = _get_unit(db, call_sign)
     incident_id = unit.assigned_incident_id
 
-    unit.status = body.status
-    unit.last_update = utcnow()
-
     if body.status in ("available", "out_of_service"):
-        unit.assigned_incident_id = None
+        # Returning to base clears the whole dispatch run (route, clock, pin).
+        clear_dispatch_run(unit)
+        unit.status = body.status
+    else:
+        unit.status = body.status
+        unit.last_update = utcnow()
 
     if incident_id and body.status in ("en_route", "on_scene"):
         incident = db.get(Incident, incident_id)

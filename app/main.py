@@ -20,6 +20,7 @@ from app.modules import (accounts, devices, dispatch, incidents, ingest,
 from app.modules.inference.service import (InferenceUnavailable, classify,
                                            ml_health)
 from app.modules.ingest import _apply_classification
+from app.modules.movement import advance_units_once
 from app.modules.ws import manager
 from app.schemas import IncidentOut
 
@@ -29,6 +30,10 @@ log = logging.getLogger("sentinel")
 
 PENDING_RETRY_INTERVAL_S = 60
 PRUNE_INTERVAL_S = 3600
+# How often responders' projected status is advanced. The dashboard animates
+# their pins every frame between these ticks, so this only needs to be tight
+# enough that a status flip (en route / on scene) feels prompt.
+UNIT_ADVANCE_INTERVAL_S = 3
 
 
 async def _retry_pending_classifications() -> None:
@@ -61,6 +66,18 @@ async def _retry_pending_classifications() -> None:
             log.exception("pending-classification retry loop error")
 
 
+async def _advance_responders() -> None:
+    """Progress dispatched units through en_route -> on_scene on the response
+    clock, so status updates without the dispatcher clicking through each step."""
+    while True:
+        await asyncio.sleep(UNIT_ADVANCE_INTERVAL_S)
+        try:
+            with SessionLocal() as db:
+                await advance_units_once(db)
+        except Exception:
+            log.exception("responder advance loop error")
+
+
 async def _prune_heartbeats() -> None:
     """§4 — rolling heartbeat retention."""
     while True:
@@ -79,6 +96,7 @@ async def _prune_heartbeats() -> None:
 @contextlib.asynccontextmanager
 async def lifespan(app: FastAPI):
     tasks = [asyncio.create_task(_retry_pending_classifications()),
+             asyncio.create_task(_advance_responders()),
              asyncio.create_task(_prune_heartbeats())]
     log.info("Sentinel backend up — inference mode: %s", get_settings().INFERENCE_MODE)
     yield

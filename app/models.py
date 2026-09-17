@@ -208,6 +208,16 @@ class ResponseUnit(Base):
     active: Mapped[bool] = mapped_column(Boolean, default=True)
     last_update: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
+    # ── Dispatch run (set on assign, cleared when the unit is freed) ──────────
+    #: When the unit was dispatched to its current incident. The response clock
+    #: — status progression and on-map movement — is measured from here.
+    dispatched_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    #: The OSRM road route to the scene as [[lon, lat], …]. The map animates the
+    #: unit along exactly this path, and it is what the responder pin follows.
+    route_geometry: Mapped[list | None] = mapped_column(JSON)
+    #: Road travel time in seconds; the denominator for "how far along am I".
+    route_eta_s: Mapped[float | None] = mapped_column(Float)
+
     def position(self) -> tuple[float, float]:
         """Live position if reported, else the home station."""
         if self.current_lat is not None and self.current_lon is not None:

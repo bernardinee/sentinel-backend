@@ -43,6 +43,37 @@ def haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     return 2 * r * math.asin(math.sqrt(a))
 
 
+def point_along(geometry: list[list[float]], fraction: float) -> tuple[float, float] | None:
+    """Position (lat, lon) at `fraction` [0..1] of the way along a route.
+
+    `geometry` is OSRM's [[lon, lat], …]. Walks the polyline by cumulative
+    great-circle length and linearly interpolates within the bracketing
+    segment, so a unit moves at a constant pace along its real road path rather
+    than jumping between vertices. Returns None if the geometry is unusable.
+    """
+    if not geometry or len(geometry) < 2:
+        return None
+    frac = min(1.0, max(0.0, fraction))
+    segs = []
+    total = 0.0
+    for (lon1, lat1), (lon2, lat2) in zip(geometry, geometry[1:]):
+        d = haversine_km(lat1, lon1, lat2, lon2)
+        segs.append(d)
+        total += d
+    if total <= 0:
+        lon, lat = geometry[-1]
+        return lat, lon
+    target = frac * total
+    walked = 0.0
+    for (lon1, lat1), (lon2, lat2), d in zip(geometry, geometry[1:], segs):
+        if walked + d >= target:
+            t = 0.0 if d == 0 else (target - walked) / d
+            return lat1 + (lat2 - lat1) * t, lon1 + (lon2 - lon1) * t
+        walked += d
+    lon, lat = geometry[-1]
+    return lat, lon
+
+
 def _straight_line_route(from_lat, from_lon, to_lat, to_lon) -> dict:
     km = haversine_km(from_lat, from_lon, to_lat, to_lon) * FALLBACK_DETOUR_FACTOR
     return {
