@@ -172,6 +172,10 @@ class EmergencyContact(Base):
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
     device_id: Mapped[str] = mapped_column(ForeignKey("devices.id"), index=True)
+    # Personal contacts belong to the driver's account, not to the ESP32.
+    # Nullable only for legacy rows and dispatcher-maintained device contacts.
+    owner_user_id: Mapped[str | None] = mapped_column(
+        ForeignKey("users.id"), index=True, nullable=True)
     name: Mapped[str] = mapped_column(String(128))
     phone: Mapped[str] = mapped_column(String(32))
     relationship_: Mapped[str | None] = mapped_column("relationship", String(64))

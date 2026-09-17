@@ -139,13 +139,23 @@ def my_incidents(device_id: str, db: Session = Depends(get_db),
 
 # ── Emergency contact CRUD (shared with dashboard Screen 4) ──────────────────
 
+def _contact_owner(principal: Principal) -> str | None:
+    if principal.role == "driver" and principal.user_id is None:
+        raise HTTPException(status_code=403, detail="Sign in to manage personal contacts")
+    return principal.user_id if principal.role == "driver" else None
+
+
 @router.get("/devices/{device_id}/contacts", response_model=list[ContactOut])
 def list_contacts(device_id: str, db: Session = Depends(get_db),
                   principal: Principal = Depends(require_role("driver", "responder"))):
     device = _get_device(db, device_id)
     ensure_device_access(principal, device)
+    owner_id = _contact_owner(principal)
+    filters = [EmergencyContact.device_id == device.id]
+    if principal.role == "driver":
+        filters.append(EmergencyContact.owner_user_id == owner_id)
     rows = db.execute(
-        select(EmergencyContact).where(EmergencyContact.device_id == device.id)
+        select(EmergencyContact).where(*filters)
         .order_by(EmergencyContact.priority)
     ).scalars().all()
     return [ContactOut.model_validate(r) for r in rows]
@@ -156,8 +166,10 @@ async def add_contact(device_id: str, body: ContactIn, db: Session = Depends(get
                       principal: Principal = Depends(require_role("driver", "responder"))):
     device = _get_device(db, device_id)
     ensure_device_access(principal, device)
+    owner_id = _contact_owner(principal)
     contact = EmergencyContact(
-        device_id=device.id, name=body.name, phone=body.phone,
+        device_id=device.id, owner_user_id=owner_id,
+        name=body.name, phone=body.phone,
         relationship_=body.relationship, priority=body.priority, active=body.active)
     db.add(contact)
     db.commit()
@@ -171,8 +183,10 @@ async def update_contact(device_id: str, contact_id: str, body: ContactPatch,
                          principal: Principal = Depends(require_role("driver", "responder"))):
     device = _get_device(db, device_id)
     ensure_device_access(principal, device)
+    owner_id = _contact_owner(principal)
     contact = db.get(EmergencyContact, contact_id)
-    if contact is None or contact.device_id != device.id:
+    if (contact is None or contact.device_id != device.id or
+            (principal.role == "driver" and contact.owner_user_id != owner_id)):
         raise HTTPException(status_code=404, detail="Contact not found")
     if body.name is not None:
         contact.name = body.name
@@ -195,8 +209,10 @@ async def delete_contact(device_id: str, contact_id: str,
                          principal: Principal = Depends(require_role("driver", "responder"))):
     device = _get_device(db, device_id)
     ensure_device_access(principal, device)
+    owner_id = _contact_owner(principal)
     contact = db.get(EmergencyContact, contact_id)
-    if contact is None or contact.device_id != device.id:
+    if (contact is None or contact.device_id != device.id or
+            (principal.role == "driver" and contact.owner_user_id != owner_id)):
         raise HTTPException(status_code=404, detail="Contact not found")
     db.delete(contact)
     db.commit()

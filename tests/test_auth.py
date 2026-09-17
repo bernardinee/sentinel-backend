@@ -93,6 +93,57 @@ def test_driver_can_create_and_read_contacts_with_a_bearer_token(client):
     assert [contact["name"] for contact in listed.json()] == ["Kojo Mensah"]
 
 
+def test_contacts_are_private_between_drivers_sharing_one_esp32(client):
+    vanessa = _register(client, email="vanessa@example.com").json()
+    friend = _register(client, email="friend@example.com").json()
+    vanessa_auth = _bearer(vanessa["access_token"])
+    friend_auth = _bearer(friend["access_token"])
+    path = "/api/v1/devices/ESP32_AUTH_001/contacts"
+
+    bernardine = client.post(path, headers=vanessa_auth, json={
+        "name": "Bernardine", "phone": "+233240000099",
+    })
+    assert bernardine.status_code == 201
+    contact_id = bernardine.json()["id"]
+
+    assert [row["name"] for row in client.get(path, headers=vanessa_auth).json()] == [
+        "Bernardine"]
+    assert client.get(path, headers=friend_auth).json() == []
+    assert client.patch(f"{path}/{contact_id}", headers=friend_auth,
+                        json={"name": "Changed"}).status_code == 404
+    assert client.delete(f"{path}/{contact_id}", headers=friend_auth).status_code == 404
+
+    friend_contact = client.post(path, headers=friend_auth, json={
+        "name": "Friend's contact", "phone": "+233240000088",
+    })
+    assert friend_contact.status_code == 201
+    assert [row["name"] for row in client.get(path, headers=friend_auth).json()] == [
+        "Friend's contact"]
+    assert [row["name"] for row in client.get(path, headers=vanessa_auth).json()] == [
+        "Bernardine"]
+
+    # Dispatchers may inspect the device's full contact roster; a shared,
+    # dispatcher-maintained contact must not silently become a driver's own.
+    shared = client.post(path, headers=HEADERS, json={
+        "name": "Dispatcher contact", "phone": "+233240000077",
+    })
+    assert shared.status_code == 201
+    assert len(client.get(path, headers=HEADERS).json()) == 3
+    assert len(client.get(path, headers=friend_auth).json()) == 1
+
+
+def test_manual_sos_does_not_treat_zero_pair_as_a_gps_fix(client):
+    session = _register(client).json()
+    auth = _bearer(session["access_token"])
+    response = client.post("/api/v1/panic", headers=auth, json={
+        "device_id": "ESP32_AUTH_001", "lat": 0, "lon": 0,
+    })
+    assert response.status_code == 201
+    assert response.json()["lat"] is None
+    assert response.json()["lon"] is None
+    assert response.json()["gps_valid"] is False
+
+
 def test_refresh_tokens_rotate_detect_reuse_and_logout(client):
     original = _register(client).json()
     refreshed = client.post(
